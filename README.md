@@ -226,14 +226,6 @@ node test/verify-url.js "https://example.com/article"
 ```
 実URLをfetchして全カテゴリの判定結果と、有料CTA候補の語を出します。
 
-### ストア提出用のパッケージ
-
-```bash
-npm run pack
-```
-`manifest.json` / `src/` / `icons/` だけを `link-radar.zip` にまとめます。
-テスト・ドキュメント・デモは含みません（ストアには不要なため）。
-GitHubリポジトリにはそれらも含めて全て置いています。
 
 ### ルールを足す
 
