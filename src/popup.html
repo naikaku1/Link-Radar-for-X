@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 288px; margin: 0; padding: 14px; font-family: system-ui, sans-serif; font-size: 14px; color: #111; }
+  h1 { font-size: 12px; margin: 0 0 8px; color: #666; letter-spacing: .06em; font-weight: 700; }
+  h1:not(:first-child) { margin-top: 18px; }
+  .row { display: flex; gap: 8px; align-items: center; padding: 5px 6px; border-radius: 7px; cursor: pointer; }
+  .row:hover { background: #f4f4f5; }
+  .row input { margin: 0; flex: none; }
+  .row .emo { width: 1.5em; text-align: center; flex: none; }
+  .card { display: flex; gap: 8px; align-items: flex-start; padding: 8px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
+  .card:hover { background: #f6f6f6; }
+  .desc { font-size: 12px; color: #666; }
+  .hint { font-size: 11px; color: #888; margin-top: 10px; line-height: 1.5; }
+  .deep { border: 1px solid #d4d4d8; border-radius: 8px; padding: 6px 10px 10px; background: #fafafa; }
+  .warn { font-size: 11px; color: #b45309; line-height: 1.5; margin-top: 2px; }
+  .tester { border: 1px solid #d4d4d8; border-radius: 8px; padding: 10px; background: #fafafa; }
+  .tester input { width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; font-family: ui-monospace, monospace; }
+  .tester button { margin-top: 6px; width: 100%; padding: 6px; font-size: 13px; border: 1px solid #999; border-radius: 6px; background: #fff; cursor: pointer; }
+  .tester button:hover { background: #f0f0f0; }
+  .out { margin-top: 8px; font-size: 12px; line-height: 1.7; min-height: 1em; word-break: break-all; }
+  .out .b { display: inline-block; background: #111; color: #fff; border-radius: 999px; padding: 2px 8px; margin: 2px 3px 2px 0; font-size: 11px; font-weight: 700; }
+  .out .none { color: #16a34a; }
+  .out .why { color: #666; font-size: 11px; }
+  .presets { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .presets button { width: auto; margin: 0; padding: 3px 8px; font-size: 11px; border-radius: 999px; }
+</style>
+</head>
+<body>
+  <h1>判定するカテゴリ</h1>
+  <div id="cats"></div>
+
+  <h1>バッジの見せ方</h1>
+  <label class="card"><input type="radio" name="badgeStyle" value="cover"><span><b>画像を赤で覆う</b><br><span class="desc">全カテゴリ共通。開く前に必ず気付ける</span></span></label>
+  <label class="card"><input type="radio" name="badgeStyle" value="pill"><span><b>小さいバッジを重ねる</b><br><span class="desc">画像は隠れないが見落としやすい</span></span></label>
+
+  <h1>リンク先の取得</h1>
+  <div class="deep">
+    <label class="row" style="padding-left:0">
+      <input type="checkbox" id="deepScan">
+      <span><b>リンク先を取得して判定する</b><br>
+      <span class="desc">有料 / 広告過多 / 登録必須 / 短縮の行き先</span></span>
+    </label>
+    <div class="warn">
+      画面に出たリンクの中身を背景で取得します。取得先は各サイトのみで、外部サーバーへは何も送信しません。OFFにすると上記4つは判定できなくなります。
+    </div>
+  </div>
+
+  <h1>動作テスト</h1>
+  <div class="tester">
+    <input id="testUrl" type="text" placeholder="URLを貼って判定を確認" spellcheck="false">
+    <button id="testBtn">判定</button>
+    <div id="testOut" class="out"></div>
+    <div class="presets" id="presets"></div>
+  </div>
+
+  <div class="hint">変更後、Xのタブを再読み込みすると反映されます。</div>
+
+<script type="module" src="popup.js"></script>
+</body>
+</html>

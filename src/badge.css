@@ -1,0 +1,101 @@
+/* ===== カードを覆う表示 =====
+   覆うのは「開く前に必ず気付いてほしいもの」だけ（R18/連投/要注意/有料/直DL）。
+   短縮・アフィ・まとめ等は画像を覆わず、小さいバッジだけにする。
+   色はカテゴリごとに変える（何で覆われているのかを色でも判別できるように）。 */
+.lr-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #fff;
+  border-radius: inherit;
+  pointer-events: none;
+  /* 中身がうっすら見える程度に留める（完全に塗り潰すと何のリンクか分からなくなる） */
+  background: rgba(70, 70, 70, 0.72);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.35);
+}
+.lr-cover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+  cursor: help;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+}
+.lr-cover-ico { font-size: 24px; line-height: 1; }
+.lr-cover-txt { font-size: 16px; font-weight: 800; letter-spacing: 0.03em; }
+.lr-cover-sub {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+/* カテゴリごとの色。重要度が高いものほど彩度を上げる。 */
+.lr-cover.lr-adult    { background: rgba(157, 23, 77, 0.74); }   /* マゼンタ */
+.lr-cover.lr-spam     { background: rgba(159, 18, 57, 0.74); }   /* 深い赤 */
+.lr-cover.lr-caution  { background: rgba(154, 52, 18, 0.74); }   /* オレンジ */
+.lr-cover.lr-paid     { background: rgba(30, 58, 138, 0.74); }   /* 紺（危険ではなく「課金」の意味） */
+.lr-cover.lr-download { background: rgba(120, 53, 15, 0.74); }   /* 茶 */
+
+/* 引用元は文字を少し小さくして本体と区別する（覆う濃さは同じ） */
+.lr-cover-quote .lr-cover-ico { font-size: 19px; }
+.lr-cover-quote .lr-cover-txt { font-size: 13px; }
+
+/* ===== 覆わない表示（短縮/アフィ/まとめ/PR/広告多/登録） ===== */
+.lr-overlay {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  pointer-events: none;
+}
+/* テキストリンク脇のインライン表示（画像が無いポスト用） */
+.lr-inline {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.lr-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 5px 10px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.82);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: help;
+}
+/* 覆いの中に並べる小さいバッジ */
+.lr-pill-sm { font-size: 11px; padding: 3px 7px; }
+
+.lr-pill.lr-shortener { background: rgba(37, 99, 235, 0.94); }   /* 青 */
+.lr-pill.lr-affiliate { background: rgba(180, 118, 4, 0.94); }   /* 黄土 */
+.lr-pill.lr-farm      { background: rgba(126, 34, 206, 0.94); }  /* 紫 */
+.lr-pill.lr-pr        { background: rgba(75, 85, 99, 0.94); }    /* グレー */
+.lr-pill.lr-ads       { background: rgba(13, 105, 99, 0.94); }   /* 青緑 */
+.lr-pill.lr-login     { background: rgba(71, 85, 105, 0.94); }   /* スレート */
+/* cover対象がピル表示になる場合（badgeStyle:"pill" / 画像なし）用 */
+.lr-pill.lr-adult     { background: rgba(190, 24, 93, 0.95); }
+.lr-pill.lr-spam      { background: rgba(190, 18, 60, 0.95); }
+.lr-pill.lr-caution   { background: rgba(194, 65, 12, 0.95); }
+.lr-pill.lr-paid      { background: rgba(30, 64, 175, 0.95); }
+.lr-pill.lr-download  { background: rgba(120, 53, 15, 0.95); }

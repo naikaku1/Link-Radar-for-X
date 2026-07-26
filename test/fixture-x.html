@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Link Radar — content.js 表示テスト</title>
+<!-- 実際の拡張機能と同じCSSを読む -->
+<link rel="stylesheet" href="../src/badge.css">
+<style>
+  /* XのDOM構造だけを真似た最小のスタイル。判定ロジックには関与しない */
+  body { font-family: system-ui, sans-serif; background: #fff; color: #0f1419; margin: 0; padding: 16px; max-width: 620px; }
+  h1 { font-size: 15px; color: #536471; font-weight: 600; }
+  article { border: 1px solid #eff3f4; border-radius: 14px; padding: 12px; margin-bottom: 14px; }
+  .name { font-weight: 700; font-size: 14px; }
+  .handle { color: #536471; font-weight: 400; }
+  .txt { font-size: 15px; line-height: 1.5; margin: 6px 0; }
+  [data-testid="card.wrapper"] { border: 1px solid #cfd9de; border-radius: 14px; overflow: hidden; margin-top: 8px; }
+  .thumb { height: 150px; background: linear-gradient(135deg, #7dd3fc, #a78bfa); display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; }
+  .cardtxt { padding: 8px 12px; font-size: 13px; }
+  .cardtxt .host { color: #536471; font-size: 12px; }
+  div[role="link"], .quotebox { border: 1px solid #cfd9de; border-radius: 14px; padding: 10px; margin-top: 8px; }
+  [data-testid="tweetPhoto"] { border-radius: 12px; overflow: hidden; margin-top: 8px; }
+  a { color: #1d9bf0; text-decoration: none; }
+  .caption { font-size: 12px; color: #536471; margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<h1>content.js 表示テスト（Xの構造を再現したダミー）</h1>
+
+<!-- ① 通常ポスト + カード（アダルト） -->
+<p class="caption">① 通常ポスト＋カード → 画像を赤で覆う</p>
+<article data-testid="tweet" role="article">
+  <div data-testid="User-Name"><span class="name">テスト太郎 <span class="handle">@test</span></span></div>
+  <div class="txt">これ見て</div>
+  <div data-testid="card.wrapper">
+    <a href="https://t.co/AAAA">
+      <div class="thumb">サムネイル画像</div>
+      <div class="cardtxt"><div class="host">missav.com</div><div>無料動画まとめ</div></div>
+    </a>
+  </div>
+</article>
+
+<!-- ② 引用ポスト: 本体は普通、引用元がアダルト -->
+<p class="caption">② 本体は普通のリンク／<b>引用元</b>がアダルト → 引用元だけ覆う</p>
+<article data-testid="tweet" role="article">
+  <div data-testid="User-Name"><span class="name">引用する人 <span class="handle">@quoter</span></span></div>
+  <div class="txt">これはひどい <a href="https://t.co/CCCC">gigazine.net</a></div>
+  <div role="link" tabindex="0">
+    <div data-testid="User-Name"><span class="name">引用元の人 <span class="handle">@original</span></span></div>
+    <div class="txt">見てね</div>
+    <div data-testid="card.wrapper">
+      <a href="https://t.co/BBBB">
+        <div class="thumb">引用元のサムネ</div>
+        <div class="cardtxt"><div class="host">pornhub.com</div><div>動画</div></div>
+      </a>
+    </div>
+  </div>
+</article>
+
+<!-- ⑤ 報告されたケース: 引用元が「短縮URL＋R18」のカードリンク -->
+<p class="caption">⑤ 引用元が <b>短縮URL＋R18</b> のカード（報告されたケース）→ 引用元を覆い、短縮は小バッジ</p>
+<article data-testid="tweet" role="article">
+  <div data-testid="User-Name"><span class="name">引用した人 <span class="handle">@rt</span></span></div>
+  <div class="txt">なんだこれ</div>
+  <div role="link" tabindex="0">
+    <div data-testid="User-Name"><span class="name">元投稿 <span class="handle">@douga</span></span></div>
+    <div class="txt">見て</div>
+    <div data-testid="card.wrapper">
+      <a href="https://t.co/FFFF">
+        <div class="thumb">引用元のサムネ</div>
+        <div class="cardtxt"><div class="host">bit.ly</div><div>動画はこちら</div></div>
+      </a>
+    </div>
+  </div>
+</article>
+
+<!-- ⑥ 覆わないカテゴリだけ -->
+<p class="caption">⑥ 短縮＋アフィだけ → <b>画像は覆わない</b>（小バッジのみ）</p>
+<article data-testid="tweet" role="article">
+  <div data-testid="User-Name"><span class="name">紹介 <span class="handle">@shop</span></span></div>
+  <div class="txt">これ買った</div>
+  <div data-testid="card.wrapper">
+    <a href="https://t.co/GGGG">
+      <div class="thumb">商品画像</div>
+      <div class="cardtxt"><div class="host">amzn.to</div><div>おすすめ商品</div></div>
+    </a>
+  </div>
+</article>
+
+<!-- ⑦ 引用元コンテナに role="link" が無い（属性が変わったケース） -->
+<p class="caption">⑦ 引用元に <code>role="link"</code> が<b>無い</b> → 構造から引用元を割り出して覆う</p>
+<article data-testid="tweet" role="article">
+  <div data-testid="User-Name"><span class="name">引用した人 <span class="handle">@rt2</span></span></div>
+  <div class="txt">これ</div>
+  <div class="quotebox">
+    <div data-testid="User-Name"><span class="name">元投稿 <span class="handle">@douga2</span></span></div>
+    <div class="txt">見て <a href="https://t.co/HHHH">missav.com/ja/x</a></div>
+    <div data-testid="tweetPhoto"><div class="thumb">引用元の画像</div></div>
+  </div>
+</article>
+
+<!-- ⑧ 引用元のURLが <a> ではなく素のテキスト -->
+<p class="caption">⑧ 引用元のURLが <b>&lt;a&gt;ではなく素のテキスト</b> → テキストから拾って覆う</p>
+<article data-testid="tweet" role="article">
+  <div data-testid="User-Name"><span class="name">引用した人 <span class="handle">@rt3</span></span></div>
+  <div class="txt">なにこれ</div>
+  <div role="link" tabindex="0">
+    <div data-testid="User-Name"><span class="name">元投稿 <span class="handle">@douga3</span></span></div>
+    <div class="txt">動画 bit.ly/xyz123</div>
+    <div data-testid="tweetPhoto"><div class="thumb">引用元の画像</div></div>
+  </div>
+</article>
+
+<!-- ③ 画像なし = テキストリンクのみ -->
+<p class="caption">③ 画像が無いポスト → ピル表示にフォールバック</p>
+<article data-testid="tweet" role="article">
+  <div data-testid="User-Name"><span class="name">告知 <span class="handle">@news</span></span></div>
+  <div class="txt">セール中 <a href="https://t.co/DDDD">amzn.to/3abcXYZ</a></div>
+</article>
+
+<!-- ④ 何も出ないはずのポスト -->
+<p class="caption">④ 普通のニュース → 何も出ない</p>
+<article data-testid="tweet" role="article">
+  <div data-testid="User-Name"><span class="name">ニュース <span class="handle">@news2</span></span></div>
+  <div class="txt">記事です</div>
+  <div data-testid="card.wrapper">
+    <a href="https://t.co/EEEE">
+      <div class="thumb">記事サムネ</div>
+      <div class="cardtxt"><div class="host">www.itmedia.co.jp</div><div>AIが変える働き方とは</div></div>
+    </a>
+  </div>
+</article>
+
+<script>
+// ---- chrome API スタブ ----
+// 実際のbackgroundは呼べないので、判定結果だけを t.co ごとに返す。
+// 検証対象は「content.js が結果をどう描画するか」＝引用元の切り分けと赤カバー。
+const RESULTS = {
+  "text:bit.ly/xyz123": { badges: [{ kind: "adult", label: "アダルトサイト" }, { kind: "shortener", label: "短縮URL" }], domain: "missav.com", safe: false },
+  "https://t.co/AAAA": { badges: [{ kind: "adult", label: "アダルトサイト" }], domain: "missav.com", safe: false },
+  "https://t.co/BBBB": { badges: [{ kind: "adult", label: "アダルトサイト" }], domain: "pornhub.com", safe: false },
+  "https://t.co/CCCC": { badges: [], domain: "gigazine.net", safe: false },
+  "https://t.co/DDDD": { badges: [{ kind: "affiliate", label: "Amazon短縮" }], domain: "amzn.to", safe: false },
+  "https://t.co/EEEE": { badges: [], domain: "itmedia.co.jp", safe: true },
+  // 短縮URLの先を解決してアダルトと分かったケース（全サイト判定ON相当）
+  "https://t.co/FFFF": { badges: [{ kind: "adult", label: "アダルトサイト" }, { kind: "shortener", label: "短縮URL" }], domain: "bit.ly", safe: false },
+  "https://t.co/GGGG": { badges: [{ kind: "shortener", label: "短縮URL" }, { kind: "affiliate", label: "Amazon短縮" }], domain: "amzn.to", safe: false },
+  "https://t.co/HHHH": { badges: [{ kind: "adult", label: "アダルトサイト" }], domain: "missav.com", safe: false }
+};
+window.chrome = {
+  runtime: {
+    lastError: null,
+    sendMessage(msg, cb) {
+      // href が空＝素のテキストから拾ったケース。background は text で判定する。
+      const key = msg.item.href || ("text:" + msg.item.text);
+      setTimeout(() => cb(RESULTS[key] || { badges: [] }), 0);
+    }
+  },
+  storage: { sync: { get(defaults, cb) { cb(defaults); } } }
+};
+</script>
+<script src="../src/content.js"></script>
+</body>
+</html>

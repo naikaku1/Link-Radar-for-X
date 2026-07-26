@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Link Radar for X — デモ</title>
+<!-- 実際の拡張機能のCSSをそのまま読む（バッジの見た目は本物と同一） -->
+<link rel="stylesheet" href="../src/badge.css">
+<style>
+  /* ===== Xのタイムラインの見た目を再現 =====
+     判定ロジックには一切関与しない。スクリーンショット用の外枠。
+     配色・サイズはXのダークモード(dim)に合わせてある。 */
+  :root {
+    --bg: #15202b;
+    --text: #f7f9f9;
+    --sub: #8b98a5;
+    --border: #38444d;
+    --blue: #1d9bf0;
+    --hover: #1e2732;
+  }
+  body.light {
+    --bg: #ffffff;
+    --text: #0f1419;
+    --sub: #536471;
+    --border: #eff3f4;
+    --hover: #f7f9f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Helvetica Neue", "Segoe UI", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .col { max-width: 600px; margin: 0 auto; border-left: 1px solid var(--border); border-right: 1px solid var(--border); min-height: 100vh; }
+  .colhead {
+    position: sticky; top: 0; z-index: 20;
+    backdrop-filter: blur(12px);
+    background: color-mix(in srgb, var(--bg) 85%, transparent);
+    padding: 14px 16px; font-weight: 800; font-size: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  article { display: flex; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  article:hover { background: var(--hover); }
+  .av { width: 40px; height: 40px; border-radius: 50%; flex: none; }
+  .body { flex: 1; min-width: 0; }
+  .head { display: flex; align-items: center; gap: 4px; font-size: 15px; line-height: 20px; white-space: nowrap; }
+  .nm { font-weight: 700; }
+  .hd, .dot, .tm { color: var(--sub); font-weight: 400; }
+  .verified { width: 16px; height: 16px; flex: none; }
+  .txt { font-size: 15px; line-height: 20px; margin: 2px 0 0; white-space: pre-wrap; word-wrap: break-word; }
+  .txt a { color: var(--blue); text-decoration: none; }
+
+  /* リンクカード */
+  [data-testid="card.wrapper"] {
+    margin-top: 12px; border: 1px solid var(--border); border-radius: 16px; overflow: hidden;
+  }
+  [data-testid="card.wrapper"] a { text-decoration: none; color: inherit; display: block; }
+  .thumb { aspect-ratio: 1.91 / 1; display: block; }
+  .cardmeta { padding: 12px; border-top: 1px solid var(--border); }
+  .cardmeta .host { color: var(--sub); font-size: 13px; line-height: 16px; }
+  .cardmeta .ttl { font-size: 15px; line-height: 20px; margin-top: 2px; }
+  .cardmeta .dsc { color: var(--sub); font-size: 15px; line-height: 20px; margin-top: 2px;
+                   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+  /* 画像だけの投稿 */
+  [data-testid="tweetPhoto"] { margin-top: 12px; border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+  [data-testid="tweetPhoto"] .thumb { aspect-ratio: 16 / 9; }
+
+  /* 引用ポスト */
+  div[role="link"] { margin-top: 12px; border: 1px solid var(--border); border-radius: 16px; padding: 12px; }
+  div[role="link"] .head { font-size: 14px; }
+  div[role="link"] .txt { font-size: 14px; }
+  div[role="link"] [data-testid="card.wrapper"],
+  div[role="link"] [data-testid="tweetPhoto"] { margin-top: 8px; }
+
+  /* アクションバー */
+  .acts { display: flex; justify-content: space-between; max-width: 425px; margin-top: 12px; color: var(--sub); font-size: 13px; }
+  .act { display: flex; align-items: center; gap: 6px; }
+  .act svg { width: 18px; height: 18px; fill: currentColor; }
+
+  /* 操作パネル（スクショ時は非表示にできる） */
+  .panel {
+    position: fixed; top: 12px; right: 12px; z-index: 100;
+    background: var(--hover); border: 1px solid var(--border); border-radius: 12px;
+    padding: 10px 12px; font-size: 13px; color: var(--text); display: flex; gap: 10px; align-items: center;
+  }
+  .panel button { font: inherit; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+                  background: transparent; color: var(--text); cursor: pointer; }
+  .panel button:hover { background: var(--border); }
+  body.shot .panel { display: none; }
+</style>
+</head>
+<body>
+
+<div class="panel">
+  <button id="theme">ライト/ダーク</button>
+  <button id="shot">パネルを隠す</button>
+</div>
+
+<div class="col">
+  <div class="colhead">ホーム</div>
+  <div id="feed"></div>
+</div>
+
+<script>
+// ==================================================================
+// デモ用の投稿データ。ここを編集すれば見せたい画を作れる。
+// ドメインは実在サイトを名指ししないよう架空のものにしてある。
+// ==================================================================
+const POSTS = [
+  {
+    av: ["#f4a261", "#e76f51"], name: "みなと", handle: "@minato_dev", time: "2時間",
+    text: "拡張機能つくった。Xのリンク、開く前に正体が分かるようにした",
+    card: { href: "https://t.co/DEMO1", host: "link-radar.example", title: "Link Radar for X",
+            desc: "Xのリンクを開く前に、アダルト誘導・連投スパム・有料記事・広告過多を判定するChrome拡張",
+            grad: ["#4361ee", "#7209b7"] },
+    stats: ["12", "48", "310"]
+  },
+  {
+    av: ["#adb5bd", "#6c757d"], name: "ゆき", handle: "@yuki_00871", time: "5分",
+    text: "この動画やばすぎでしょ🥺 みんな見て",
+    card: { href: "https://t.co/DEMO2", host: "movie-free24.example", title: "無料動画はこちら",
+            desc: "今すぐ視聴できます", grad: ["#f72585", "#b5179e"] },
+    stats: ["1", "0", "3"]
+  },
+  {
+    av: ["#2a9d8f", "#264653"], name: "経済ニュース", handle: "@econ_news_jp", time: "1時間",
+    text: "【速報】日銀、追加利上げを検討へ　市場の見方は分かれる",
+    card: { href: "https://t.co/DEMO3", host: "keizai-times.example", title: "日銀、追加利上げを検討へ",
+            desc: "関係者への取材で分かった。市場では年内の実施を織り込む動きも出ている",
+            grad: ["#1d3557", "#457b9d"] },
+    stats: ["34", "120", "890"]
+  },
+  {
+    av: ["#e9c46a", "#f4a261"], name: "まとめ速報", handle: "@matome_sokuho24", time: "3時間",
+    text: "話題になってたやつまとめました",
+    card: { href: "https://t.co/DEMO4", host: "matome-news24.example", title: "【衝撃】あの話題の真相がこちら",
+            desc: "ネットの反応をまとめました", grad: ["#8d99ae", "#2b2d42"] },
+    stats: ["8", "22", "95"]
+  },
+  {
+    av: ["#a8dadc", "#457b9d"], name: "たけし", handle: "@takeshi_camp", time: "6時間",
+    text: "これはひどい……",
+    quote: {
+      av: ["#adb5bd", "#495057"], name: "アカウント", handle: "@spam_acct_0917", time: "8時間",
+      text: "見てね💕",
+      card: { href: "https://t.co/DEMO5", host: "bit.ly", title: "動画はこちら",
+              desc: "", grad: ["#ff006e", "#8338ec"] }
+    },
+    stats: ["5", "31", "140"]
+  }
+];
+
+// ---- 判定結果（実際のbackgroundが返すのと同じ形） ----
+const RESULTS = {
+  "https://t.co/DEMO1": { badges: [], domain: "link-radar.example", safe: true },
+  "https://t.co/DEMO2": { badges: [{ kind: "adult", label: "アダルト(サイト自己申告)" }], domain: "movie-free24.example", safe: false },
+  "https://t.co/DEMO3": { badges: [{ kind: "paid", label: "有料記事" }], domain: "keizai-times.example", safe: false },
+  "https://t.co/DEMO4": { badges: [{ kind: "farm", label: "まとめ/転載" }, { kind: "ads", label: "広告枠14個" }], domain: "matome-news24.example", safe: false },
+  "https://t.co/DEMO5": { badges: [{ kind: "adult", label: "アダルトサイト" }, { kind: "shortener", label: "短縮URL" }], domain: "bit.ly", safe: false }
+};
+
+// ---- 描画 ----
+// CSSのlinear-gradientで十分。SVGのdataURIは '#' の扱いで壊れやすいので使わない。
+const svgGrad = (a, b) => `linear-gradient(135deg, ${a}, ${b})`;
+
+const ICONS = {
+  reply: '<svg viewBox="0 0 24 24"><path d="M1.751 10c0-4.42 3.584-8 8.005-8h4.366c4.49 0 8.129 3.64 8.129 8.13 0 2.96-1.607 5.68-4.196 7.11l-8.054 4.46v-3.69h-.067c-4.49.1-8.183-3.51-8.183-8.01z"/></svg>',
+  rt:    '<svg viewBox="0 0 24 24"><path d="M4.5 3.88l4.432 4.14-1.364 1.46L5.5 7.55V16c0 1.1.896 2 2 2H13v2H7.5c-2.209 0-4-1.79-4-4V7.55L1.432 9.48.068 8.02 4.5 3.88zM16.5 6H11V4h5.5c2.209 0 4 1.79 4 4v8.45l2.068-1.93 1.364 1.46-4.432 4.14-4.432-4.14 1.364-1.46 2.068 1.93V8c0-1.1-.896-2-2-2z"/></svg>',
+  like:  '<svg viewBox="0 0 24 24"><path d="M16.697 5.5c-1.222-.06-2.679.51-3.89 2.16l-.805 1.09-.806-1.09C9.984 6.01 8.526 5.44 7.304 5.5c-1.243.07-2.349.78-2.91 1.91-.552 1.12-.633 2.78.479 4.82 1.074 1.97 3.257 4.27 7.129 6.61 3.87-2.34 6.052-4.64 7.126-6.61 1.111-2.04 1.03-3.7.477-4.82-.561-1.13-1.666-1.84-2.908-1.91z"/></svg>'
+};
+
+function el(tag, cls, html) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html != null) e.innerHTML = html;
+  return e;
+}
+
+function renderCard(c) {
+  const w = el("div");
+  w.setAttribute("data-testid", "card.wrapper");
+  const a = el("a");
+  a.href = c.href;
+  const th = el("div", "thumb");
+  th.style.background = svgGrad(c.grad[0], c.grad[1]);
+  th.style.backgroundSize = "cover";
+  const meta = el("div", "cardmeta");
+  meta.appendChild(el("div", "host", c.host));
+  meta.appendChild(el("div", "ttl", c.title));
+  if (c.desc) meta.appendChild(el("div", "dsc", c.desc));
+  a.append(th, meta);
+  w.appendChild(a);
+  return w;
+}
+
+function renderHead(p) {
+  const h = el("div", "head");
+  const un = el("div");
+  un.setAttribute("data-testid", "User-Name");
+  un.style.display = "contents";
+  un.append(el("span", "nm", p.name), el("span", "hd", p.handle),
+            el("span", "dot", "·"), el("span", "tm", p.time));
+  h.appendChild(un);
+  return h;
+}
+
+function renderPost(p, isQuote) {
+  const wrap = isQuote ? el("div") : el("article");
+  if (isQuote) { wrap.setAttribute("role", "link"); wrap.setAttribute("tabindex", "0"); }
+  else { wrap.setAttribute("data-testid", "tweet"); wrap.setAttribute("role", "article"); }
+
+  const avatar = el("div", "av");
+  avatar.style.background = svgGrad(p.av[0], p.av[1]);
+  avatar.style.backgroundSize = "cover";
+
+  const body = el("div", "body");
+  body.appendChild(renderHead(p));
+  if (p.text) body.appendChild(el("p", "txt", p.text));
+  if (p.card) body.appendChild(renderCard(p.card));
+  if (p.quote) body.appendChild(renderPost(p.quote, true));
+
+  if (!isQuote && p.stats) {
+    const acts = el("div", "acts");
+    [["reply", p.stats[0]], ["rt", p.stats[1]], ["like", p.stats[2]]].forEach(([k, n]) => {
+      acts.appendChild(el("div", "act", ICONS[k] + "<span>" + n + "</span>"));
+    });
+    body.appendChild(acts);
+  }
+
+  if (isQuote) {
+    const inner = el("div");
+    inner.style.cssText = "display:flex;gap:8px;align-items:center";
+    const av2 = el("div", "av");
+    av2.style.cssText = "width:20px;height:20px;background-size:cover";
+    av2.style.background = svgGrad(p.av[0], p.av[1]);
+    inner.append(av2, renderHead(p));
+    body.replaceChild(inner, body.firstChild);
+    return body.parentElement ? wrap : (wrap.appendChild(body), wrap);
+  }
+
+  wrap.append(avatar, body);
+  return wrap;
+}
+
+const feed = document.getElementById("feed");
+POSTS.forEach(p => feed.appendChild(renderPost(p, false)));
+
+// ---- chrome API スタブ（判定結果を返すだけ。描画は本物のcontent.jsが行う）----
+window.chrome = {
+  runtime: {
+    lastError: null,
+    sendMessage(msg, cb) {
+      const key = msg.item.href || ("text:" + msg.item.text);
+      setTimeout(() => cb(RESULTS[key] || { badges: [] }), 0);
+    }
+  },
+  storage: { sync: { get(defaults, cb) { cb(defaults); } } }
+};
+
+document.getElementById("theme").onclick = () => document.body.classList.toggle("light");
+document.getElementById("shot").onclick = () => document.body.classList.add("shot");
+</script>
+<!-- 本物のcontent.js。バッジの描画ロジックは拡張機能とまったく同じ -->
+<script src="../src/content.js"></script>
+</body>
+</html>
