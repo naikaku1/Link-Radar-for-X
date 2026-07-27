@@ -336,5 +336,5 @@ export const DEFAULT_SETTINGS = {
   ...Object.fromEntries(CATEGORIES.map(c => ["cat_" + c.kind, c.default])),
   badgeStyle: "cover",   // バッジの見せ方 cover(画像を赤で覆う) | pill(画像の上に小さく重ねる)
   deepScan: true,        // リンク先を背景取得して有料/広告過多/登録必須/短縮の先を判定
-  maxBadges: 3           // 1ポストに出すバッジの最大数
+  maxBadges: 4           // 1ポストに出すバッジの最大数（覆い＋小バッジで4つまでは読める）
 };

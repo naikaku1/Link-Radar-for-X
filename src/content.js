@@ -22,9 +22,9 @@ const BADGE_ORDER = Object.keys(BADGE);
 
 const SPAM_REPEAT_MIN = 3;   // リプ欄で同一ドメインがこの件数以上のポストに出たら「連投」
 
-let settings = { badgeStyle: "cover", maxBadges: 3, cat_spam: true };
+let settings = { badgeStyle: "cover", maxBadges: 4, cat_spam: true };
 try {
-  chrome.storage.sync.get({ badgeStyle: "cover", maxBadges: 3, cat_spam: true }, v => {
+  chrome.storage.sync.get({ badgeStyle: "cover", maxBadges: 4, cat_spam: true }, v => {
     if (v) settings = { ...settings, ...v };
   });
 } catch {}
@@ -66,7 +66,7 @@ function sortAndCap(badges) {
   const out = [...badges].sort(
     (a, b) => BADGE_ORDER.indexOf(a.kind) - BADGE_ORDER.indexOf(b.kind)
   );
-  const cap = Number(settings.maxBadges) || 3;
+  const cap = Number(settings.maxBadges) || 4;
   return out.slice(0, cap);
 }
 
