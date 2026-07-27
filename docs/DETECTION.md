@@ -27,7 +27,7 @@
 **同一ドメインで一般向けとアダルトが分かれるサイト**はパス前方一致でも書けます:
 
 ```js
-"dmm.co.jp/digital"   // FANZA系だけ当てる。dmm.com/mono（通販）は当てない
+"dmm.co.jp"           // DMMは dmm.co.jp=FANZA(R18) / dmm.com=一般 で分かれている
 "fc2.com/adult"
 "dlsite.com/maniax"
 ```
@@ -48,23 +48,36 @@
 さらに `SAFE_HOSTS`（大手ドメイン一覧）に載っているサイトでは **(b) を評価しません**。
 note.com に「エロ本の話」という記事があってもアダルト判定しない、ということです。
 
-### (c) サイト自身の申告 — `ADULT_HTML_RE`（要fetch）
+### (c) サイト自身の申告（要fetch）
+信頼度が違う2種類に分けてある。
+
+**構造シグナル `ADULT_META_RE`** — `<meta>` タグの中だけを見る。機械可読な宣言なので
+どのドメインでも信用してよい。
 **URLに何の手掛かりも無い新規ドメインに効く、実質的に一番強い判定。**
 `abc-video.site` のような無害に見える名前でも、中身を見れば分かります。
 
 ```js
-/RTA-5042-1996-1400-1577-RTA/                            // RTAラベル（業界標準の自己申告）
+/<meta[^>]+content=["'][^"']*RTA-5042-1996-1400-1577-RTA/i   // RTAラベル（業界標準）
 /<meta[^>]+name=["']rating["'][^>]+content=["'](adult|mature|…)/i
-/あなたは18(歳|才)以上ですか/                              // 年齢確認ゲート
+```
+
+**本文テキスト `ADULT_TEXT_RE`** — 年齢確認ゲートの文言。URLに手掛かりが無い新規ドメインに
+効く強力な判定だが、「年齢確認について解説した記事」にも一致してしまう。
+そのため **`SAFE_HOSTS` では評価しない**。
+
+```js
+/あなたは18(歳|才)以上ですか/
 /18歳未満の(方|かた)(は|の)…(ご遠慮|退出|閲覧できません)/
 /(this|the) (site|website) contains adult (content|material)/i
 ```
 
-年齢確認ゲートはアダルトサイトがほぼ必ず持っていて、一般サイトには出ません。
-「サイト自身が宣言している」ものを読むだけなので、こちらが推測する余地がなく誤検出しません。
-
-> 一般記事が「18歳未満の喫煙は禁止」と書いていても当たらないよう、
-> 正規表現は「退出/ご遠慮/閲覧できません」といったゲート特有の語とセットにしてあります。
+> ⚠️ **実際に起きた誤検出**: このプロジェクトのREADMEが「あなたは18歳以上ですか」を
+> 例示として含んでいたため、**GitHubのリポジトリページがアダルト判定された**。
+> 同時に `<code>isAccessibleForFree:false</code>` に反応して有料判定もされていた。
+>
+> 対策として (1) 構造シグナルは `<meta>` と JSON-LD ブロックの中だけで探す
+> (2) 本文照合の前に `<pre>`/`<code>` を除去する
+> (3) テキストベースの判定は `SAFE_HOSTS` では行わない、の3点を入れた。
 
 ---
 
@@ -159,6 +172,11 @@ yurukuyaru(9) は取りこぼしますが、毎日新聞を誤検出しないこ
 /<meta[^>]+article:content_tier[^>]+content=["'](locked|metered)["']/i
 ```
 
+**これらは `<meta>` タグと `<script type="application/ld+json">` ブロックの中でだけ探します。**
+文書全体を正規表現でなぞると、ページが構造シグナルの"話をしている"だけで一致してしまうためです
+（このリポジトリのREADMEが `isAccessibleForFree:false` と書いていたせいで、GitHubのページが
+有料記事と誤判定されました）。宣言は宣言のある場所でだけ探します。
+
 ### 第2層: 媒体別CTA — `PAYWALL_SITES[domain].paidRe`
 実記事で「有料記事だけに出る」ことを確認した文字列。
 
@@ -220,8 +238,27 @@ bit.ly / tinyurl / cutt.ly / lnkd.in / linktr.ee / lit.link / x.gd など。
 
 **`t.co` は含めません。** X の標準ラッパなので、全リンクに付いてしまい情報量がゼロだからです。
 
-短縮URLの**行き先**は別途解決します（`redirect: "follow"` で fetch し、最終URLを再判定）。
+短縮URLの**行き先**は別途解決し、着地先で全カテゴリを再判定します。
 これにより「短縮の裏に隠れたアダルトサイト」を検出できます。
+
+### 多段中継の追跡
+HTTPの30xだけでは足りません。**200を返して小さなHTMLでJSリダイレクトする中継**が使われるためです。
+
+```
+is.gd/xxxxx
+  → playstone.biz/redirect/…   (206バイト。<input type="hidden" id="redirect_to_url"> に次のURL)
+  → applove.info/redirect/…    (239バイト。同上)
+  → 実体ページ (18KB)
+```
+
+`extractRelayTarget()` が中継ページから次のURLを取り出し、最大4ホップまで追跡します
+（`MAX_RELAY_HOPS`）。取得したHTMLが4KB（`RELAY_MAX_BYTES`）を超えたら実体ページとみなして停止し、
+ループ検出のため訪問済みURLも記録します。抽出できる形は次の4つ:
+
+1. `<input type="hidden" id="redirect_to_url" value="…">` などの hidden input
+2. `<meta http-equiv="refresh" content="0;URL=…">`
+3. `location.replace("…")` / `location.href = "…"`
+4. 文書内の最初の絶対URL（フォールバック）
 
 ---
 

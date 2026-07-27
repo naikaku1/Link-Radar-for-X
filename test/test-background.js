@@ -17,7 +17,7 @@ let deepScanOn = false;
 globalThis.chrome = {
   storage: {
     sync: { get: async (defaults) => ({ ...defaults, deepScan: deepScanOn }) },
-    local: { get: async () => ({}), set: async () => {} },
+    local: { get: async () => ({}), set: async () => {}, clear: async () => {} },
     onChanged: { addListener() {} }
   },
   permissions: {
@@ -25,7 +25,11 @@ globalThis.chrome = {
     onAdded: { addListener() {} },
     onRemoved: { addListener() {} }
   },
-  runtime: { onMessage: { addListener: (fn) => messageListeners.push(fn) } }
+  runtime: {
+    onMessage: { addListener: (fn) => messageListeners.push(fn) },
+    onInstalled: { addListener() {} },
+    getManifest: () => ({ version: "test" })
+  }
 };
 
 // ---- fetch スタブ（t.co中継ページと、その先の本文を返す）----

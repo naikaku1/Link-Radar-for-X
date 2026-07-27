@@ -3,9 +3,9 @@
 // paywall判定は paywall.js、URLだけの判定は classifier.js に分離してある。
 import {
   AD_SCRIPT_HOSTS, AD_SLOT_PATTERNS, AD_HEAVY_MIN_SLOTS, AD_HEAVY_MIN_NETWORKS,
-  ADULT_HTML_RE, LOGIN_WALL_RE
+  ADULT_META_RE, ADULT_TEXT_RE, LOGIN_WALL_RE
 } from "./rules.js";
-import { stripTags } from "./paywall.js";
+import { stripTags, extractStructured } from "./paywall.js";
 
 /**
  * ページに置かれている広告"枠"の数を数える。
@@ -49,14 +49,32 @@ export function detectAdLoad(html) {
 }
 
 /**
- * サイト自身によるアダルト自己申告（RTAラベル / meta rating）。
- * 自己申告なので誤検出が起きにくい＝強いシグナル。
+ * サイト自身によるアダルトの申告。信頼度の違う2種類を分けて扱う。
+ *
+ *  (1) <meta> タグでの宣言（RTAラベル / rating=adult）… 機械可読なのでどこでも信用できる
+ *  (2) 年齢確認ゲートの本文テキスト … 強力だが「年齢確認について書いた記事」にも一致する。
+ *      そのため trustText=false（SAFE_HOSTS＝大手/正規ドメイン）では評価しない。
+ *
+ * ※ このプロジェクト自身のREADMEが「あなたは18歳以上ですか」を含んでいたため、
+ *   GitHubのリポジトリページがアダルト判定される誤検出が実際に起きた。
+ *
+ * @param {string} html
+ * @param {{trustText?:boolean}} [opts] trustText 既定 true
  * @returns {string|null}
  */
-export function detectAdultFromHtml(html) {
+export function detectAdultFromHtml(html, opts = {}) {
   if (!html) return null;
-  for (const re of ADULT_HTML_RE) {
-    if (re.test(html)) return "アダルト(サイト自己申告)";
+
+  const structured = extractStructured(html);
+  for (const re of ADULT_META_RE) {
+    if (re.test(structured)) return "アダルト(サイトが宣言)";
+  }
+
+  if (opts.trustText === false) return null;
+
+  const text = stripTags(html);
+  for (const re of ADULT_TEXT_RE) {
+    if (re.test(text)) return "アダルト(年齢確認あり)";
   }
   return null;
 }
@@ -77,13 +95,17 @@ export function detectLoginWall(html) {
 
 /**
  * ページ全体のシグナルをまとめて返す。
+ * @param {string} html
+ * @param {{trustText?:boolean}} [opts] 本文テキストベースの判定を信用してよいか
  * @returns {{ads?:string, adsDetail?:object, adult?:string, login?:string}}
  */
-export function analyzeHtml(html) {
+export function analyzeHtml(html, opts = {}) {
   const out = {};
   const ads = detectAdLoad(html);
   if (ads.label) { out.ads = ads.label; out.adsDetail = ads; }
-  const adult = detectAdultFromHtml(html); if (adult) out.adult = adult;
-  const login = detectLoginWall(html);     if (login) out.login = login;
+  const adult = detectAdultFromHtml(html, opts); if (adult) out.adult = adult;
+  if (opts.trustText !== false) {
+    const login = detectLoginWall(html);        if (login) out.login = login;
+  }
   return out;
 }

@@ -5,7 +5,7 @@
 //   paywall: {status:"paid"|"free"|"unknown", ...}
 //   finalUrl: 解決できた最終URL（t.co/短縮の行き先開示用）
 import {
-  classifyByUrl, extractTcoTarget, parseUrl, isSafeHost, registrableDomain,
+  classifyByUrl, extractRelayTarget, parseUrl, isSafeHost, registrableDomain,
   urlFromDisplayText, hostFromDisplayText
 } from "./classifier.js";
 import { detectPaywallFromHtml } from "./paywall.js";
@@ -16,6 +16,23 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_CONCURRENT = 4;
 const MAX_HTML_BYTES = 1_500_000;   // 巨大ページで判定コストが跳ねるのを防ぐ
+const MAX_RELAY_HOPS = 4;           // 中継ページを追う上限
+const RELAY_MAX_BYTES = 4000;       // これより小さいHTMLは「中継ページ」の可能性がある
+
+// 判定ルールを変更したのに古い結果が残り続けると、直したはずの誤検出が最大6時間消えない。
+// 拡張機能のバージョンが変わったらキャッシュを丸ごと捨てる。
+const RULES_VERSION = chrome.runtime.getManifest().version;
+const VERSION_KEY = "__lrRulesVersion";
+
+async function invalidateCacheOnUpdate() {
+  try {
+    const got = await chrome.storage.local.get(VERSION_KEY);
+    if (got[VERSION_KEY] === RULES_VERSION) return;
+    await chrome.storage.local.clear();
+    await chrome.storage.local.set({ [VERSION_KEY]: RULES_VERSION });
+    memCache.clear();
+  } catch {}
+}
 
 const memCache = new Map();     // key -> {result, ts}
 const inflight = new Map();
@@ -38,6 +55,11 @@ async function loadSettings() {
   } catch { hasAllUrls = false; }
 }
 loadSettings();
+invalidateCacheOnUpdate();
+if (chrome.runtime.onInstalled) {
+  // 更新直後は必ず作り直す（reason: "update" / "install" どちらも）
+  chrome.runtime.onInstalled.addListener(() => { chrome.storage.local.clear().catch(() => {}); memCache.clear(); });
+}
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "sync") return;
   for (const [k, v] of Object.entries(changes)) settings[k] = v.newValue;
@@ -108,6 +130,34 @@ async function fetchWithBody(url) {
 }
 
 function safeHost(u) { try { return new URL(u).hostname.toLowerCase(); } catch { return null; } }
+
+/**
+ * 中継ページを辿って実体ページまで到達する。
+ *
+ * 短縮URLの先が「200で小さなHTMLを返し、JSで次へ飛ばす」多段中継になっていることがある
+ * （実例: is.gd → playstone.biz/redirect/… → applove.info/redirect/… → 実体）。
+ * HTTPの30xではないので redirect:"follow" では辿れず、短縮URLの裏側が判定できなかった。
+ *
+ * @returns {{finalUrl:string, html:string}|null}
+ */
+async function fetchFollowingRelays(url) {
+  let cur = url;
+  const seen = new Set();
+  for (let hop = 0; hop < MAX_RELAY_HOPS; hop++) {
+    if (seen.has(cur)) break;                 // ループ防止
+    seen.add(cur);
+    const got = await fetchWithBody(cur);
+    if (!got) return null;
+
+    // 実体ページとみなせる大きさなら、そこで終わり
+    if (got.html.length > RELAY_MAX_BYTES) return got;
+
+    const next = extractRelayTarget(got.html);
+    if (!next || !isHttpUrl(next) || next === got.finalUrl) return got;
+    cur = next;
+  }
+  return await fetchWithBody(cur);
+}
 
 function isShortenerHost(host) {
   return !!host && SHORTENER_HOSTS.some(h => host === h || host.endsWith("." + h));
@@ -180,7 +230,7 @@ async function classifyItem({ href, text }) {
 
       if (needsResolve) {
         const stub = await schedule(() => fetchWithBody(href));
-        const target = stub ? extractTcoTarget(stub.html) : null;
+        const target = stub ? extractRelayTarget(stub.html) : null;
         if (target && isHttpUrl(target)) {
           realUrl = target;
           realHost = safeHost(target) || realHost;
@@ -210,21 +260,30 @@ async function classifyItem({ href, text }) {
       if (site && site.enabled === false) {
         paywall = { status: "unknown", reason: "dynamic-paywall" };
       } else {
-        const got = await schedule(() => fetchWithBody(realUrl));
+        const got = await schedule(() => fetchFollowingRelays(realUrl));
         if (!got) {
           paywall = { status: "unknown", reason: "fetch-failed" };
         } else {
-          paywall = detectPaywallFromHtml(got.html, realHost, { generic: !site && deepScanEnabled() });
-          const sig = analyzeHtml(got.html);
+          // 中継を辿った結果、別ドメインに着地していることがある。判定は着地先で行う。
+          const landedHost = safeHost(got.finalUrl) || realHost;
+          const landedUrl = parseUrl(got.finalUrl || realUrl);
+          // 大手/正規ドメインでは、本文テキストに依存する判定（年齢確認・汎用有料CTA）を信用しない。
+          // 有料CTAやアダルトの文言を"引用しているだけ"のページを誤判定しないため。
+          const trustText = landedUrl ? !isSafeHost(landedUrl) : true;
+
+          paywall = detectPaywallFromHtml(got.html, landedHost, {
+            generic: !matchPaywallSite(landedHost) && deepScanEnabled(),
+            trustText
+          });
+          const sig = analyzeHtml(got.html, { trustText });
           // 有料が取れているときは「登録必須」は出さない（有料の方が強い情報）
           if (paywall.status === "paid") delete sig.login;
           addBadges(sig);
-          // 最終URLで再判定（短縮URLの裏に隠れたアダルト/アフィ等はここで出る）
+          // 着地先URLで再判定（短縮URL・多段中継の裏に隠れたアダルト/アフィ等はここで出る）
           addBadges(classifyByUrl(got.finalUrl || realUrl));
-          // リダイレクトで別ドメインに着地したら、そちらを最終ホストとして扱う
-          // （連投カウントの単位と、ポップアップに出すホスト表示を実態に合わせる）
-          const landed = safeHost(got.finalUrl || "");
-          if (landed && landed !== realHost) realHost = landed;
+          // 連投カウントの単位とポップアップのホスト表示を、実際の着地先に合わせる
+          if (landedHost && landedHost !== realHost) realHost = landedHost;
+          if (got.finalUrl && got.finalUrl !== realUrl) { realUrl = got.finalUrl; resolved = true; }
         }
       }
       if (paywall && paywall.status === "paid") add("paid", "有料記事");
@@ -267,6 +326,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     Promise.all(msg.items.map(it =>
       classifyItem(it).then(r => [it.href || it.text, r]).catch(() => [it.href || it.text, { badges: [] }])
     )).then(pairs => sendResponse(Object.fromEntries(pairs)));
+    return true;
+  }
+  if (msg && msg.type === "clearCache") {
+    memCache.clear();
+    chrome.storage.local.clear()
+      .then(() => chrome.storage.local.set({ [VERSION_KEY]: RULES_VERSION }))
+      .then(() => sendResponse({ ok: true }))
+      .catch(e => sendResponse({ ok: false, error: String(e) }));
     return true;
   }
   if (msg && msg.type === "getSettings") {

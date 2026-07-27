@@ -110,6 +110,14 @@ function runTest() {
   });
 }
 
+// 判定結果は6時間キャッシュされる。ルールを直した直後や、判定がおかしいときに手動で捨てる。
+document.getElementById("clearCache").addEventListener("click", (e) => {
+  chrome.runtime.sendMessage({ type: "clearCache" }, () => {
+    e.target.textContent = "消しました（Xのタブを再読み込み）";
+    setTimeout(() => { e.target.textContent = "判定キャッシュを消す"; }, 2500);
+  });
+});
+
 document.getElementById("testBtn").addEventListener("click", runTest);
 urlEl.addEventListener("keydown", (e) => { if (e.key === "Enter") runTest(); });
 

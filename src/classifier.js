@@ -182,23 +182,39 @@ export function hostFromDisplayText(text) {
 }
 
 /**
- * t.coの中継ページHTMLから本当の遷移先URLを取り出す。
- * t.coは30xを返さず200で meta refresh / location.replace に本URLを埋めた小さなHTMLを返すため、
- * redirect:"follow" では辿れない。ここでその本URLを抽出する。
+ * 「中継ページ」のHTMLから、本当の遷移先URLを取り出す。
+ *
+ * HTTPの30xではなく、200で小さなHTMLを返して JS/meta refresh で飛ばす作りの中継が多い。
+ * `redirect:"follow"` では辿れないので、ここで次のURLを抽出する。
+ *   - t.co            … meta refresh + location.replace
+ *   - 短縮URLの多段中継 … <input type="hidden" id="redirect_to_url" value="..."> 等
+ *
  * @returns {string|null}
  */
-export function extractTcoTarget(html) {
+export function extractRelayTarget(html) {
   if (!html) return null;
-  // 1) <meta http-equiv="refresh" content="0;URL=...">
-  let m = html.match(/URL=([^"'<>\s]+)/i);
-  if (m) return m[1].replace(/\\\//g, "/");
-  // 2) location.replace("https:\/\/...")
-  m = html.match(/location\.replace\(\s*["']([^"']+)["']\s*\)/i);
-  if (m) return m[1].replace(/\\\//g, "/");
-  // 3) 最初の t.co 以外の絶対URL
+  const unescape = (u) => u.replace(/\\\//g, "/").replace(/&amp;/g, "&");
+
+  // 1) hidden input に次のURLを持つ形（多段リダイレクトの中継でよく使われる）
+  let m = html.match(/<input[^>]+(?:id|name)=["'][^"']*redirect[^"']*["'][^>]+value=["'](https?:\/\/[^"']+)["']/i)
+       || html.match(/<input[^>]+value=["'](https?:\/\/[^"']+)["'][^>]+(?:id|name)=["'][^"']*redirect/i);
+  if (m) return unescape(m[1]);
+
+  // 2) <meta http-equiv="refresh" content="0;URL=...">
+  m = html.match(/URL=([^"'<>\s]+)/i);
+  if (m) return unescape(m[1]);
+
+  // 3) location.replace("https:\/\/...") / location.href = "..."
+  m = html.match(/location\.(?:replace\s*\(|href\s*=)\s*["']([^"']+)["']/i);
+  if (m) return unescape(m[1]);
+
+  // 4) 最初の絶対URL（自分自身のドメインは中継元なので除外できない点に注意）
   m = html.match(/https?:\/\/(?!t\.co\/)[^\s"'<>\\)]+/i);
-  return m ? m[0].replace(/\\\//g, "/") : null;
+  return m ? unescape(m[0]) : null;
 }
+
+/** 後方互換のための別名（t.co専用だった頃のAPI） */
+export const extractTcoTarget = extractRelayTarget;
 
 /**
  * URLのみの分類をまとめて返す。

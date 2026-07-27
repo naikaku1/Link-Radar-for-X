@@ -1,6 +1,6 @@
 {
   "name": "link-radar-for-x",
-  "version": "0.5.0",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
   "description": "Xのリンクを開く前にアダルト/連投スパム/有料記事/広告過多などに分類するChrome拡張",

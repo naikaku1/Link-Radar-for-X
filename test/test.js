@@ -1,8 +1,9 @@
 // test/test.js — 依存なしの簡易テストハーネス。`npm test` で実行。
-import { classifyByUrl, extractTcoTarget, detectAdult, parseUrl,
+import { classifyByUrl, extractTcoTarget, extractRelayTarget, detectAdult, parseUrl,
          urlFromDisplayText, registrableDomain } from "../src/classifier.js";
 import { detectPaywallFromHtml } from "../src/paywall.js";
 import { detectAdLoad, countAdSlots, detectAdultFromHtml, detectLoginWall, analyzeHtml } from "../src/pagesignals.js";
+import { extractStructured, stripTags } from "../src/paywall.js";
 import { DEFAULT_SETTINGS, CATEGORIES } from "../src/rules.js";
 
 let pass = 0, fail = 0;
@@ -116,11 +117,13 @@ ok("未登録＋genericなし → unknown",
 ok("未登録＋generic＋CTA → paid",
    detectPaywallFromHtml('<p>ここから先は有料です</p>', "unknown-media.example", { generic: true }).status === "paid");
 ok("未登録＋generic＋文字列isAccessibleForFree → paid",
-   detectPaywallFromHtml('{"isAccessibleForFree":"False"}', "unknown-media.example", { generic: true }).status === "paid");
+   detectPaywallFromHtml('<script type="application/ld+json">{"isAccessibleForFree":"False"}</script>',
+     "unknown-media.example", { generic: true }).status === "paid");
 ok("content_tier=locked → paid",
    detectPaywallFromHtml('<meta property="article:content_tier" content="locked">', "unknown-media.example", { generic: true }).status === "paid");
 ok("hasPart cssSelector .paywall → paid",
-   detectPaywallFromHtml('{"hasPart":{"@type":"WebPageElement","cssSelector":".paywalled-content"}}', "unknown-media.example", { generic: true }).status === "paid");
+   detectPaywallFromHtml('<script type="application/ld+json">{"hasPart":{"@type":"WebPageElement","cssSelector":".paywalled-content"}}</script>',
+     "unknown-media.example", { generic: true }).status === "paid");
 ok("英語CTA(Subscribe to continue reading) → paid",
    detectPaywallFromHtml('<div>Subscribe to continue reading</div>', "unknown-media.example", { generic: true }).status === "paid");
 ok("英語ナビ語(Already a subscriber?)だけ → free",
@@ -171,6 +174,59 @@ ok("location.replace(エスケープ)から抽出",
      === "https://www.yomiuri.co.jp/economy/x.html");
 ok("抽出したURLのhostは対象媒体",
    new URL(extractTcoTarget(tcoReal)).hostname === "www.asahi.com");
+
+console.log("誤検出の回帰テスト（自分のドキュメントに反応した件）");
+// 実際に起きた誤検出: このプロジェクトのREADMEを載せたGitHubページが
+// 「有料」かつ「アダルト」と判定された。判定ルールの文言を本文で引用していたため。
+const selfDoc = `<html><head><title>Link Radar</title></head><body>
+  <li><strong>構造シグナル</strong> … <code>isAccessibleForFree:false</code> / <code>article:content_tier=locked</code></li>
+  <li><strong>年齢確認ゲート</strong>（「あなたは18歳以上ですか」等）。</li>
+  <pre><code>/ここから先は有料/  /この続きは有料/
+/RTA-5042-1996-1400-1577-RTA/</code></pre>
+  <p>残り 500 文字といった文言は使ってはいけない、という解説。</p>
+</body></html>`;
+ok("解説ページを有料と誤判定しない(SAFE_HOST)",
+   detectPaywallFromHtml(selfDoc, "github.com", { generic: true, trustText: false }).status === "free");
+ok("コード内のisAccessibleForFreeを構造シグナルとして拾わない",
+   detectPaywallFromHtml(selfDoc, "unknown.example", { generic: true, trustText: false }).status === "free");
+ok("解説ページをアダルトと誤判定しない(SAFE_HOST)",
+   !detectAdultFromHtml(selfDoc, { trustText: false }));
+ok("コード内のRTA文字列は拾わない",
+   !detectAdultFromHtml('<pre><code>/RTA-5042-1996-1400-1577-RTA/</code></pre>', { trustText: false }));
+ok("meta内のRTAは拾う",
+   detectAdultFromHtml('<meta name="RATING" content="RTA-5042-1996-1400-1577-RTA">', { trustText: false })
+     === "アダルト(サイトが宣言)");
+ok("stripTagsが<code>/<pre>を落とす",
+   !stripTags(selfDoc).includes("isAccessibleForFree"));
+ok("extractStructuredはmetaとJSON-LDだけ返す",
+   extractStructured('<meta name="rating" content="adult"><p>本文</p>').includes("rating") &&
+   !extractStructured('<meta name="x" content="y"><p>本文テキスト</p>').includes("本文テキスト"));
+
+// 本物の宣言はちゃんと拾う
+ok("meta rating=adult は拾う",
+   detectAdultFromHtml('<meta name="rating" content="adult">', { trustText: false }) === "アダルト(サイトが宣言)");
+ok("JSON-LDのisAccessibleForFreeは拾う",
+   detectPaywallFromHtml('<script type="application/ld+json">{"isAccessibleForFree":false}</script>',
+     "unknown.example", { generic: true, trustText: false }).status === "paid");
+ok("年齢確認ゲートはSAFE以外なら拾う",
+   detectAdultFromHtml("<p>あなたは18歳以上ですか</p>", { trustText: true }) === "アダルト(年齢確認あり)");
+
+console.log("多段リダイレクトの中継ページ解析");
+ok("hidden inputから次のURLを取る",
+   extractRelayTarget('<input type="hidden" id="redirect_to_url" value="https://applove.info/r/5nhsZ" />')
+     === "https://applove.info/r/5nhsZ");
+ok("meta refreshから取る",
+   extractRelayTarget('<META http-equiv="refresh" content="0;URL=https://example.com/a">')
+     === "https://example.com/a");
+ok("location.hrefから取る",
+   extractRelayTarget('<script>location.href = "https://example.com/b"</script>') === "https://example.com/b");
+ok("次のURLが無ければnull", extractRelayTarget("<p>ただの本文</p>") === null);
+
+console.log("FANZA(dmm.co.jp)の判定");
+ok("ad.games.dmm.co.jp は adult",
+   classifyByUrl("https://ad.games.dmm.co.jp/nijikano_r01/index.html").adult);
+ok("dmm.co.jp は adult(FANZA)", classifyByUrl("https://www.dmm.co.jp/top/").adult);
+ok("dmm.com(一般)は非adult",     !classifyByUrl("https://www.dmm.com/mono/book/").adult);
 
 console.log("既定値");
 ok("全カテゴリが既定でON",     CATEGORIES.every(c => DEFAULT_SETTINGS["cat_" + c.kind] === true));

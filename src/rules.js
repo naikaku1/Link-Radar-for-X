@@ -53,7 +53,7 @@ export const AFFILIATE_RULES = [
   { id: "awin",           label: "Awin",               hostRe: /(^|\.)(awin1\.com|zenaps\.com)$/ },
   { id: "cj",             label: "CJ Affiliate",       hostRe: /(^|\.)(anrdoezrs\.net|dpbolvw\.net|jdoqocy\.com|kqzyfj\.com|tkqlhce\.com)$/ },
   { id: "shareasale",     label: "ShareASale",         hostRe: /(^|\.)shareasale\.com$/ },
-  { id: "generic-aff",    label: "アフィリエイト(汎用)", paramAny: ["affiliate_id", "aff_id", "utm_medium=affiliate"] }
+  { id: "generic-aff",    label: "アフィリエイト(汎用)", paramAny: ["affiliate_id", "aff_id", "utm_medium=affiliate", "utm_medium=aff", "assistclickid"] }
 ];
 
 // ------------------------------------------------------------------
@@ -113,7 +113,7 @@ export const ADULT_HOSTS = [
   // 日本語圏
   "missav.com", "missav.ws", "javbus.com", "javlibrary.com", "supjav.com",
   "jable.tv", "avgle.com", "fc2.com/adult", "adult.contents.fc2.com",
-  "dmm.co.jp/digital", "fanza.com", "sokmil.com", "mgstage.com",
+  "dmm.co.jp", "fanza.com", "sokmil.com", "mgstage.com",   // dmm.co.jp=FANZA(R18)／dmm.com=一般
   "caribbeancom.com", "1pondo.tv", "heyzo.com", "tokyo-hot.com", "10musume.com",
   "pcolle.com", "ci-en.dlsite.com", "dlsite.com/maniax", "getchu.com",
   // 出会い系/ライブチャット
@@ -130,13 +130,22 @@ export const ADULT_URL_RE = [
   /\.adult$/i, /\.sex$/i, /\.porn$/i
 ];
 
-// HTML側の明示的なアダルト自己申告（サイト自身が宣言しているので誤検出が起きにくい）。
-// URLに何の手掛かりも無い新規ドメインでも、中身を見れば年齢確認で分かることが多い。
-export const ADULT_HTML_RE = [
-  /RTA-5042-1996-1400-1577-RTA/,                                  // RTAラベル(業界標準の自己申告)
+// アダルトの自己申告は2種類に分けて扱う。信頼度がまったく違うため。
+//
+// (1) 構造シグナル: <meta> タグの中だけを見る。サイトが機械可読な形で宣言したもの。
+//     文章中にたまたま同じ語が出ることが無いので、どのドメインでも信用してよい。
+export const ADULT_META_RE = [
+  /<meta[^>]+content=["'][^"']*RTA-5042-1996-1400-1577-RTA/i,      // RTAラベル(業界標準)
   /<meta[^>]+name=["']rating["'][^>]+content=["'](adult|mature|RTA-[^"']*)["']/i,
-  /<meta[^>]+name=["']rating["'][^>]+content=["']restricted\s+to\s+adults["']/i,
-  // 年齢確認ゲート（アダルトサイトはほぼ必ず持っている。一般サイトには出ない）
+  /<meta[^>]+name=["']rating["'][^>]+content=["']restricted\s+to\s+adults["']/i
+];
+
+// (2) 本文テキスト: 年齢確認ゲートの文言。URLに手掛かりが無い新規ドメインに効く強力な判定だが、
+//     「年齢確認について解説した記事」のような無関係なページにも一致してしまう。
+//     そのため SAFE_HOSTS（大手/正規ドメイン）では評価しない。
+//     ※ このプロジェクト自身のREADMEが「あなたは18歳以上ですか」を含んでいて、
+//        GitHubのリポジトリページがアダルト判定される誤検出が実際に起きた。
+export const ADULT_TEXT_RE = [
   /18歳未満の(方|かた)(は|の)[\s\S]{0,20}(ご遠慮|退出|閲覧できません|入場できません)/,
   /あなたは18(歳|才)以上ですか/,
   /(成人|アダルト)コンテンツが含まれ/,
