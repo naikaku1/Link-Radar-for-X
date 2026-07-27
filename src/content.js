@@ -301,23 +301,52 @@ function processTweet(tweet) {
     const item = u.textOnly
       ? { href: "", text: u.textOnly }
       : { href: u.anchor.href, text: (u.anchor.innerText || u.anchor.textContent || "").trim() };
+    const key = item.href || item.text;
+    // 取得完了後に届く差分(classifyUpdate)で描き直せるよう、描画先を控えておく
+    pending.set(key, { target: u.target, anchor: u.anchor, tweet });
+
     try {
       chrome.runtime.sendMessage({ type: "classify", item }, (resp) => {
         if (chrome.runtime.lastError) { retry(); return; }
-        const r = resp && resp.paywall && resp.paywall.reason;
-        if (r === "fetch-failed" || r === "resolve-miss") { retry(); return; }
         if (!resp) return;
-
-        const badges = resp.badges ? [...resp.badges] : [];
-        render(u.target, u.anchor, badges, tweet);
-        trackForSpam({
-          target: u.target, anchor: u.anchor, badges, tweet,
-          domain: resp.domain, safe: !!resp.safe
-        });
+        applyResult(key, resp, retry);
       });
     } catch {}
   }
 }
+
+// ------------------------------------------------------------------
+// 判定結果の適用
+//   backgroundは2段階で返す:
+//     1回目 … URLだけで分かる分（即座。partial:true）
+//     2回目 … リンク先を取得して分かる分（classifyUpdate で後から届く）
+//   こうしないと、取得が終わるまでバッジが1つも出ず「遅い」と感じる。
+// ------------------------------------------------------------------
+const pending = new Map();   // key -> {target, anchor, tweet}
+
+function applyResult(key, resp, onRetry) {
+  const slot = pending.get(key);
+  if (!slot || !slot.tweet.isConnected) return;
+
+  const r = resp.paywall && resp.paywall.reason;
+  if (r === "fetch-failed" || r === "resolve-miss") { if (onRetry) onRetry(); return; }
+
+  const badges = resp.badges ? [...resp.badges] : [];
+  render(slot.target, slot.anchor, badges, slot.tweet);
+
+  // 連投カウントは行き先が確定してから（partialの時点ではまだ短縮URLのドメイン）
+  if (!resp.partial) {
+    trackForSpam({
+      target: slot.target, anchor: slot.anchor, badges, tweet: slot.tweet,
+      domain: resp.domain, safe: !!resp.safe
+    });
+    pending.delete(key);
+  }
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.type === "classifyUpdate" && msg.key) applyResult(msg.key, msg.result || {});
+});
 
 // 画面内に入ったポストだけ処理
 const io = new IntersectionObserver((entries) => {

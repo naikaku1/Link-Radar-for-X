@@ -149,6 +149,7 @@ const RESULTS = {
 window.chrome = {
   runtime: {
     lastError: null,
+    onMessage: { addListener() {} },   // content.js が差分更新用に登録する
     sendMessage(msg, cb) {
       // href が空＝素のテキストから拾ったケース。background は text で判定する。
       const key = msg.item.href || ("text:" + msg.item.text);

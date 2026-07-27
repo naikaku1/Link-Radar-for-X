@@ -14,7 +14,8 @@ import { matchPaywallSite, DEFAULT_SETTINGS, SHORTENER_HOSTS } from "./rules.js"
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 8000;
-const MAX_CONCURRENT = 4;
+const MAX_CONCURRENT = 8;           // 背景fetchの並列数。全リンクを取得するようになったので広げた
+const ITEM_BUDGET_MS = 12000;       // 1リンクに使ってよい合計時間（中継を辿っても伸びすぎないように）
 const MAX_HTML_BYTES = 1_500_000;   // 巨大ページで判定コストが跳ねるのを防ぐ
 const MAX_RELAY_HOPS = 4;           // 中継ページを追う上限
 const RELAY_MAX_BYTES = 4000;       // これより小さいHTMLは「中継ページ」の可能性がある
@@ -143,8 +144,10 @@ function safeHost(u) { try { return new URL(u).hostname.toLowerCase(); } catch {
 async function fetchFollowingRelays(url) {
   let cur = url;
   const seen = new Set();
+  const deadline = Date.now() + ITEM_BUDGET_MS;
   for (let hop = 0; hop < MAX_RELAY_HOPS; hop++) {
     if (seen.has(cur)) break;                 // ループ防止
+    if (Date.now() > deadline) break;         // 1リンクに時間をかけすぎない
     seen.add(cur);
     const got = await fetchWithBody(cur);
     if (!got) return null;
@@ -167,6 +170,43 @@ function isShortenerHost(host) {
 function isHttpUrl(u) {
   const p = parseUrl(u);
   return !!p && /^https?:$/.test(p.protocol);
+}
+
+/**
+ * URLだけで分かる判定を、fetchせずに即座に返す。
+ *
+ * 取得が要る判定（有料/広告量/登録必須/短縮の行き先）まで待つと、
+ * その間ポストにバッジが1つも出ず「遅い」と感じる。まずこれを返して先に描画し、
+ * 取得が終わったら差分を送って上書きする（classifyUpdate）。
+ */
+function classifyQuick({ href, text }) {
+  const badges = [];
+  const seen = new Set();
+  const add = (kind, label) => {
+    if (!label || seen.has(kind) || !catOn(kind)) return;
+    seen.add(kind);
+    badges.push({ kind, label });
+  };
+  const addBadges = (o) => {
+    add("affiliate", o.affiliate); add("shortener", o.shortener); add("pr", o.pr);
+    add("farm", o.farm); add("caution", o.caution); add("adult", o.adult); add("download", o.download);
+  };
+
+  const hrefHost = safeHost(href);
+  const displayUrl = urlFromDisplayText(text);
+  const displayHost = hostFromDisplayText(text);
+  if (hrefHost && hrefHost !== "t.co") addBadges(classifyByUrl(href));
+  if (displayUrl) addBadges(classifyByUrl(displayUrl));
+
+  const host = (hrefHost && hrefHost !== "t.co") ? hrefHost : displayHost;
+  const parsed = host ? parseUrl("https://" + host) : null;
+  return {
+    badges,
+    partial: true,                     // まだ取得前の暫定結果
+    host: host || undefined,
+    domain: host ? registrableDomain(host) : undefined,
+    safe: parsed ? isSafeHost(parsed) : true
+  };
 }
 
 async function classifyItem({ href, text }) {
@@ -319,8 +359,28 @@ async function classifyItem({ href, text }) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "classify" && msg.item) {
-    classifyItem(msg.item).then(sendResponse).catch(e => sendResponse({ error: String(e), badges: [] }));
-    return true;
+    const tabId = sender && sender.tab ? sender.tab.id : null;
+
+    // ポップアップの動作テストなど、タブ以外からの問い合わせは完全な結果を待って返す
+    if (tabId == null) {
+      classifyItem(msg.item).then(sendResponse).catch(e => sendResponse({ error: String(e), badges: [] }));
+      return true;
+    }
+
+    const key = msg.item.href || msg.item.text;
+    const hit = memCache.get(key);
+    const fresh = hit && Date.now() - hit.ts < CACHE_TTL_MS;
+
+    // 1) まずURLだけの判定を即返す → バッジがすぐ出る
+    sendResponse(fresh ? hit.result : classifyQuick(msg.item));
+
+    // 2) 取得が要る判定は終わり次第、差分として送る
+    if (!fresh) {
+      classifyItem(msg.item)
+        .then(result => chrome.tabs.sendMessage(tabId, { type: "classifyUpdate", key, result }))
+        .catch(() => {});
+    }
+    return false;
   }
   if (msg && msg.type === "classifyBatch" && Array.isArray(msg.items)) {
     Promise.all(msg.items.map(it =>

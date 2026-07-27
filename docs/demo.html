@@ -51,6 +51,8 @@
   .verified { width: 16px; height: 16px; flex: none; }
   .txt { font-size: 15px; line-height: 20px; margin: 2px 0 0; white-space: pre-wrap; word-wrap: break-word; }
   .txt a { color: var(--blue); text-decoration: none; }
+  .replyto { color: var(--sub); font-size: 15px; line-height: 20px; margin-top: 2px; }
+  .replyto b { color: var(--blue); font-weight: 400; }
 
   /* リンクカード */
   [data-testid="card.wrapper"] {
@@ -141,6 +143,14 @@ const POSTS = [
     stats: ["8", "22", "95"]
   },
   {
+    // 短縮URL × 連投 × アフィリエイト × R18 が同時に出るケース（リプ欄スパムの典型）
+    av: ["#ced4da", "#868e96"], name: "あかり", handle: "@akari_2508713", time: "1分",
+    replyTo: "@buzz_post", text: "これマジで良かった😍 みんなも見て",
+    card: { href: "https://t.co/DEMO6", host: "is.gd", title: "詳細はこちら",
+            desc: "", grad: ["#c1121f", "#780000"] },
+    stats: ["0", "0", "0"]
+  },
+  {
     av: ["#a8dadc", "#457b9d"], name: "たけし", handle: "@takeshi_camp", time: "6時間",
     text: "これはひどい……",
     quote: {
@@ -159,7 +169,18 @@ const RESULTS = {
   "https://t.co/DEMO2": { badges: [{ kind: "adult", label: "アダルト(サイト自己申告)" }], domain: "movie-free24.example", safe: false },
   "https://t.co/DEMO3": { badges: [{ kind: "paid", label: "有料記事" }], domain: "keizai-times.example", safe: false },
   "https://t.co/DEMO4": { badges: [{ kind: "farm", label: "まとめ/転載" }, { kind: "ads", label: "広告枠14個" }], domain: "matome-news24.example", safe: false },
-  "https://t.co/DEMO5": { badges: [{ kind: "adult", label: "アダルトサイト" }, { kind: "shortener", label: "短縮URL" }], domain: "bit.ly", safe: false }
+  "https://t.co/DEMO5": { badges: [{ kind: "adult", label: "アダルトサイト" }, { kind: "shortener", label: "短縮URL" }], domain: "bit.ly", safe: false },
+  // 短縮URLを3段辿った先がアフィリエイト付きのアダルトLPで、かつ同じドメインが
+  // リプ欄の複数ポストに出ている、という4カテゴリ同時のケース
+  "https://t.co/DEMO6": {
+    badges: [
+      { kind: "adult",     label: "アダルトサイト" },
+      { kind: "spam",      label: "ad.games.example が 5 件のポストに出現" },
+      { kind: "affiliate", label: "アフィリエイト(汎用)" },
+      { kind: "shortener", label: "短縮URL" }
+    ],
+    domain: "ad.games.example", safe: false
+  }
 };
 
 // ---- 描画 ----
@@ -218,6 +239,7 @@ function renderPost(p, isQuote) {
 
   const body = el("div", "body");
   body.appendChild(renderHead(p));
+  if (p.replyTo) body.appendChild(el("div", "replyto", '返信先: <b>' + p.replyTo + '</b>さん'));
   if (p.text) body.appendChild(el("p", "txt", p.text));
   if (p.card) body.appendChild(renderCard(p.card));
   if (p.quote) body.appendChild(renderPost(p.quote, true));
@@ -252,6 +274,7 @@ POSTS.forEach(p => feed.appendChild(renderPost(p, false)));
 window.chrome = {
   runtime: {
     lastError: null,
+    onMessage: { addListener() {} },   // content.js が差分更新用に登録する
     sendMessage(msg, cb) {
       const key = msg.item.href || ("text:" + msg.item.text);
       setTimeout(() => cb(RESULTS[key] || { badges: [] }), 0);
