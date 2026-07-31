@@ -26,6 +26,21 @@
   cursor: help;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
 }
+/* 絵文字フォントの指定は **絵文字のスパンだけ** に当てる。
+   Xのwebfont(TwitterChirp)に引きずられないようにするのが目的。
+
+   ⚠️ .lr-pill 全体に当ててはいけない。ピルにはラベル文字も入っているので、
+      "R18" の数字が Apple Color Emoji のキーキャップ用グリフに当たって
+      字形と字幅が崩れる（実際にこれで "R18" がおかしくなった）。 */
+.lr-cover-ico, .lr-pill-emo {
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+}
+/* ラベル側は本文用のフォントに固定する */
+.lr-pill, .lr-cover-txt {
+  font-family: system-ui, -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  font-variant-numeric: normal;
+}
+.lr-pill-emo { margin-right: 3px; }
 .lr-cover-ico { font-size: 24px; line-height: 1; }
 .lr-cover-txt { font-size: 16px; font-weight: 800; letter-spacing: 0.03em; }
 .lr-cover-sub {
@@ -89,11 +104,12 @@
 
 .lr-pill.lr-shortener { background: rgba(37, 99, 235, 0.94); }   /* 青 */
 .lr-pill.lr-affiliate { background: rgba(180, 118, 4, 0.94); }   /* 黄土 */
+.lr-pill.lr-invite    { background: rgba(5, 150, 105, 0.94); }   /* 緑 */
 .lr-pill.lr-farm      { background: rgba(126, 34, 206, 0.94); }  /* 紫 */
 .lr-pill.lr-pr        { background: rgba(75, 85, 99, 0.94); }    /* グレー */
 .lr-pill.lr-ads       { background: rgba(13, 105, 99, 0.94); }   /* 青緑 */
 .lr-pill.lr-login     { background: rgba(71, 85, 105, 0.94); }   /* スレート */
-/* cover対象がピル表示になる場合（badgeStyle:"pill" / 画像なし）用 */
+/* 覆う対象（画像/カード）が無いポストでは、cover対象もピルで出すのでその色 */
 .lr-pill.lr-adult     { background: rgba(190, 24, 93, 0.95); }
 .lr-pill.lr-spam      { background: rgba(190, 18, 60, 0.95); }
 .lr-pill.lr-caution   { background: rgba(194, 65, 12, 0.95); }

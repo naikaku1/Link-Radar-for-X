@@ -2,8 +2,10 @@
 // ここに入れてよいのは「URL文字列を見れば事実として言えること」だけ。
 // ページ内容に依存する判定（有料/広告量/登録必須）は pagesignals.js 側。
 import {
-  AFFILIATE_RULES, SHORTENER_HOSTS, PR_RULES, FARM_HOSTS, CAUTION_HOSTS,
-  SAFE_HOSTS, ADULT_HOSTS, ADULT_URL_RE, DOWNLOAD_EXT_RE
+  AFFILIATE_RULES, SHORTENER_HOSTS, PR_RULES, FARM_HOSTS,
+  SAFE_HOSTS, ADULT_HOSTS, ADULT_URL_RE, DOWNLOAD_EXT_RE,
+  INVITE_RULES, INVITE_PARAMS, INVITE_PATH_RE,
+  userCautionList, userExcludeList
 } from "./rules.js";
 
 /**
@@ -81,6 +83,28 @@ export function detectAffiliate(url) {
   return null;
 }
 
+/**
+ * 招待/紹介リンク判定。
+ *  (a) アプリ固有ルール（招待コードがパスに埋まるもの）
+ *  (b) 招待コードのクエリパラメータ  (c) 招待用のパスセグメント
+ * (b)(c) は「招待キャンペーンの構造」なので、SAFE_HOSTS でも評価する
+ * （アフィリエイトを amazon.co.jp でも判定するのと同じ理屈。事実ベースの判定）。
+ */
+export function detectInvite(url) {
+  const host = url.hostname.toLowerCase();
+  for (const r of INVITE_RULES) {
+    if (r.hostRe && hostMatches(r.hostRe, host)) {
+      if (r.pathRe && !r.pathRe.test(url.pathname)) continue;
+      return r.label;
+    }
+  }
+  for (const k of url.searchParams.keys()) {
+    if (INVITE_PARAMS.includes(k.toLowerCase())) return `招待コード付き(${k})`;
+  }
+  if (INVITE_PATH_RE.test(url.pathname)) return "招待/紹介リンク";
+  return null;
+}
+
 /** 短縮URL判定 */
 export function detectShortener(url) {
   const host = url.hostname.toLowerCase();
@@ -102,9 +126,18 @@ export function detectFarm(url) {
   return hostInList(url, FARM_HOSTS) ? "まとめ/転載" : null;
 }
 
-/** 要注意ドメイン判定（既知の報告あり。断定はしない） */
+/**
+ * ユーザーが判定対象から外したドメインか。
+ * SAFE_HOSTS が「ヒューリスティックだけ止める」のに対し、こちらは**何も判定しない**。
+ * 誤検出されたときに利用者が打てる唯一の手なので、中途半端に効かせない。
+ */
+export function isUserExcluded(url) {
+  return hostInList(url, userExcludeList());
+}
+
+/** 自分で登録したドメイン。同梱リストではなく利用者の設定なので、断定してよい。 */
 export function detectCaution(url) {
-  return hostInList(url, CAUTION_HOSTS) ? "要注意(報告あり)" : null;
+  return hostInList(url, userCautionList()) ? "自分で登録したドメイン" : null;
 }
 
 /**
@@ -218,14 +251,16 @@ export const extractTcoTarget = extractRelayTarget;
 
 /**
  * URLのみの分類をまとめて返す。
- * @returns {{affiliate?:string, shortener?:string, pr?:string, farm?:string,
+ * @returns {{affiliate?:string, invite?:string, shortener?:string, pr?:string, farm?:string,
  *            caution?:string, adult?:string, download?:string}}
  */
 export function classifyByUrl(raw) {
   const url = parseUrl(raw);
   if (!url) return {};
+  if (isUserExcluded(url)) return {};   // 除外登録されたドメインは一切判定しない
   const out = {};
   const aff = detectAffiliate(url);   if (aff) out.affiliate = aff;
+  const inv = detectInvite(url);      if (inv) out.invite = inv;
   const sh = detectShortener(url);    if (sh) out.shortener = sh;
   const pr = detectPR(url);           if (pr) out.pr = pr;
   const farm = detectFarm(url);       if (farm) out.farm = farm;

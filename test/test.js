@@ -4,7 +4,8 @@ import { classifyByUrl, extractTcoTarget, extractRelayTarget, detectAdult, parse
 import { detectPaywallFromHtml } from "../src/paywall.js";
 import { detectAdLoad, countAdSlots, detectAdultFromHtml, detectLoginWall, analyzeHtml } from "../src/pagesignals.js";
 import { extractStructured, stripTags } from "../src/paywall.js";
-import { DEFAULT_SETTINGS, CATEGORIES } from "../src/rules.js";
+import { DEFAULT_SETTINGS, CATEGORIES, setUserRules, normalizeDomain, USER_LIST_MAX,
+         normalizeDomainList } from "../src/rules.js";
 
 let pass = 0, fail = 0;
 function ok(name, cond) {
@@ -29,6 +30,9 @@ ok("a8.net は affiliate",         classifyByUrl("https://px.a8.net/svt/ejp?a8ma
 ok("もしも は affiliate",          classifyByUrl("https://af.moshimo.com/af/c/click?a_id=1").affiliate);
 ok("CJ(anrdoezrs) は affiliate",  classifyByUrl("https://www.anrdoezrs.net/links/123/type/dlg").affiliate);
 ok("utm_medium=affiliate 検出",   classifyByUrl("https://example.com/x?utm_medium=affiliate").affiliate);
+ok("utm_medium=affiliate は💰のみ(📣と二重にしない)",
+   !classifyByUrl("https://example.com/x?utm_medium=affiliate").pr);
+ok("utm_medium=cpc は pr",        classifyByUrl("https://example.com/x?utm_medium=cpc").pr);
 ok("bit.ly は shortener",         classifyByUrl("https://bit.ly/abcd").shortener);
 ok("tinyurl は shortener",        classifyByUrl("https://tinyurl.com/abcd").shortener);
 ok("lit.link は shortener",       classifyByUrl("https://lit.link/foo").shortener);
@@ -38,6 +42,19 @@ ok("outbrain は 広告(pr)",        classifyByUrl("https://www.outbrain.com/wha
 ok("togetter は farm",            classifyByUrl("https://togetter.com/li/123456").farm);
 ok("通常ドメインは farm/caution 無し", !classifyByUrl("https://www.asahi.com/articles/AS.html").farm && !classifyByUrl("https://example.com/").caution);
 ok("通常ニュースURLは無印",        Object.keys(classifyByUrl("https://www.asahi.com/articles/AS123.html")).length === 0);
+
+console.log("招待/紹介リンク");
+ok("TikTok Lite は invite",       classifyByUrl("https://lite.tiktok.com/t/ZSabcdefg/").invite);
+ok("invite_code パラメータ",       classifyByUrl("https://example.com/dl?invite_code=ABC123").invite);
+ok("referral_code パラメータ",     classifyByUrl("https://example.com/?referralCode=XYZ").invite);
+ok("パスの /invite/ ",            classifyByUrl("https://app.example.com/invite/AB12").invite);
+ok("パスの /referral",            classifyByUrl("https://example.com/referral").invite);
+ok("SAFE_HOSTSでも招待は判定する", classifyByUrl("https://www.tiktok.com/x?invite_code=1").invite);
+ok("onelink.me は shortener",     classifyByUrl("https://myapp.onelink.me/abcd").shortener);
+ok("計測リンク＋招待コードは両方",  (() => { const r = classifyByUrl("https://myapp.onelink.me/ab?invite_code=Z9"); return r.invite && r.shortener; })());
+ok("ref= 単体は invite にしない",  !classifyByUrl("https://example.com/page?ref=nav").invite);
+ok("/reference/ は invite にしない", !classifyByUrl("https://example.com/reference/api").invite);
+ok("見出しに招待の語があっても無関係", !classifyByUrl("https://www.asahi.com/articles/AS1.html").invite);
 
 console.log("アダルト判定");
 ok("既知ドメインは adult",         classifyByUrl("https://jp.pornhub.com/view?v=1").adult);
@@ -228,10 +245,42 @@ ok("ad.games.dmm.co.jp は adult",
 ok("dmm.co.jp は adult(FANZA)", classifyByUrl("https://www.dmm.co.jp/top/").adult);
 ok("dmm.com(一般)は非adult",     !classifyByUrl("https://www.dmm.com/mono/book/").adult);
 
+console.log("ユーザー登録ドメインの正規化");
+ok("URLを貼ってもホストだけ採る", normalizeDomain(" https://WWW.Example.com/a?b=1 ") === "example.com");
+ok("www.は落とす",              normalizeDomain("www.example.co.jp") === "example.co.jp");
+ok("ポートは落とす",            normalizeDomain("example.com:8080") === "example.com");
+ok("大文字は小文字化",          normalizeDomain("EXAMPLE.COM") === "example.com");
+ok("ドメインでないものはnull",   normalizeDomain("これはドメインではない") === null);
+ok("空はnull",                  normalizeDomain("  ") === null);
+ok("TLDだけはnull",             normalizeDomain("com") === null);
+ok("重複は排除",                normalizeDomainList(["a.com", "www.a.com", "A.com"]).length === 1);
+ok("上限で切り詰める",
+   normalizeDomainList(Array.from({ length: USER_LIST_MAX + 50 }, (_, i) => `d${i}.com`)).length === USER_LIST_MAX);
+
+console.log("ユーザー登録ドメインの判定");
+setUserRules({ caution: ["mydanger.example"], exclude: ["gigazine.net"] });
+ok("登録したドメインに caution が出る",
+   classifyByUrl("https://mydanger.example/a").caution);
+ok("サブドメインも対象",
+   classifyByUrl("https://sub.mydanger.example/a").caution);
+ok("登録していないドメインには出ない",
+   !classifyByUrl("https://example.com/a").caution);
+ok("除外ドメインは何も判定しない",
+   Object.keys(classifyByUrl("https://gigazine.net/x?utm_medium=affiliate")).length === 0);
+ok("除外はサブドメインにも効く",
+   Object.keys(classifyByUrl("https://www.gigazine.net/x?invite_code=1")).length === 0);
+ok("除外していないドメインは通常どおり",
+   classifyByUrl("https://other.example/x?invite_code=1").invite);
+setUserRules({});   // 以降のテストに影響させない
+ok("リセットすると caution は消える", !classifyByUrl("https://mydanger.example/a").caution);
+ok("リセットすると除外も消える",      !!classifyByUrl("https://gigazine.net/x?utm_medium=affiliate").affiliate);
+
 console.log("既定値");
+ok("ユーザーリストは既定で空",
+   DEFAULT_SETTINGS.userCaution.length === 0 && DEFAULT_SETTINGS.userExclude.length === 0);
 ok("全カテゴリが既定でON",     CATEGORIES.every(c => DEFAULT_SETTINGS["cat_" + c.kind] === true));
 ok("リンク先の取得が既定でON", DEFAULT_SETTINGS.deepScan === true);
-ok("既定の見せ方は画像を覆う", DEFAULT_SETTINGS.badgeStyle === "cover");
+ok("見せ方の設定は廃止済み",   !("badgeStyle" in DEFAULT_SETTINGS));
 
 console.log(`\n結果: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Link Radar for X — リンクの正体判定",
-  "version": "0.6.0",
-  "description": "Xのリンクを開く前に判定。有料記事(🔒)/アダルト(🔞)/連投スパム(🚨)/アフィ(💰)/短縮(🔗)/広告過多(📊)などを検出し、該当ポストの画像を赤で覆います。引用元も判定。",
+  "version": "0.7.0",
+  "description": "そのリンク、開く前に正体がわかります。Xのタイムラインとリプ欄のリンクを判定し、アダルトや連投スパムは画像を覆って警告。有料記事やアフィリンクも見分けます。",
   "permissions": ["storage"],
   "host_permissions": ["<all_urls>"],
   "background": {

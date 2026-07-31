@@ -1,11 +1,12 @@
 {
   "name": "link-radar-for-x",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Xのリンクを開く前にアダルト/連投スパム/有料記事/広告過多などに分類するChrome拡張",
   "scripts": {
     "test": "node test/test.js && node test/test-background.js",
+    "test:dom": "echo '→ ブラウザで http://localhost:8933/test/content-test.html を開いてください（Ctrl+Cで終了）' && python3 -m http.server 8933",
     "pack": "rm -f link-radar.zip && zip -rq link-radar.zip manifest.json src icons -x '*.DS_Store' && unzip -l link-radar.zip"
   },
   "license": "MIT",

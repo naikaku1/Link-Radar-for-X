@@ -2,7 +2,7 @@
 // 使い方: node test/verify-url.js "https://www.asahi.com/articles/xxxx.html"
 // 目的: 実測して rules.js のルール（有料CTA/広告ネットワーク等）をハードニングする。
 import { detectPaywallFromHtml, stripTags } from "../src/paywall.js";
-import { classifyByUrl, detectRisky, parseUrl } from "../src/classifier.js";
+import { classifyByUrl, isSafeHost, registrableDomain, parseUrl } from "../src/classifier.js";
 import { detectAdLoad, detectAdultFromHtml, detectLoginWall } from "../src/pagesignals.js";
 
 const url = process.argv[2];
@@ -20,8 +20,10 @@ console.log("status   :", res.status, "| htmlLen:", html.length);
 // --- URLだけの判定 ---
 console.log("\n--- URL判定 ---");
 console.log("byUrl    :", JSON.stringify(classifyByUrl(finalUrl)));
-const risky = detectRisky(parseUrl(finalUrl));
-console.log("risky    :", risky ? `${risky.label}  (strong:${risky.strong.length} weak:${risky.weak.length})` : "なし");
+// ヒューリスティック(連投/アダルト語)を適用するかどうかの分かれ目
+const parsed = parseUrl(finalUrl);
+console.log("SAFE_HOST:", parsed && isSafeHost(parsed) ? "はい（ヒューリスティックは適用しない）" : "いいえ");
+console.log("連投単位 :", registrableDomain(host));
 
 // --- ページ内容の判定 ---
 console.log("\n--- ページ内容判定 ---");

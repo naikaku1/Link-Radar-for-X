@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Link Radar — content.js 回帰テスト</title>
+<!-- ルート絶対パスにしてある。下の history.replaceState でパスを /status/<id> に
+     書き換えるため、相対パスだとそこから解決されて 404 になる。
+     → プロジェクトルートを配信して開くこと（例: python3 -m http.server） -->
+<link rel="stylesheet" href="/src/badge.css">
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background: #fff; color: #0f1419; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .lead { font-size: 12px; color: #536471; margin: 0 0 16px; line-height: 1.6; }
+  #summary { font-size: 15px; font-weight: 700; padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; }
+  #summary.pass { background: #dcfce7; color: #14532d; }
+  #summary.fail { background: #fee2e2; color: #7f1d1d; }
+  #out { font-size: 13px; line-height: 1.9; font-family: ui-monospace, monospace; }
+  #out .g { color: #15803d; }
+  #out .r { color: #b91c1c; font-weight: 700; }
+  #out .grp { display: block; margin-top: 10px; font-weight: 700; color: #0f1419; font-family: system-ui, sans-serif; }
+  #out .why { color: #6b7280; padding-left: 22px; }
+  /* シナリオDOMは判定に関与しない。画面に出すと結果が読みにくいので隠す */
+  #stage { position: absolute; left: -99999px; top: 0; width: 600px; }
+  #stage [data-testid="card.wrapper"] { border: 1px solid #ccc; }
+  #stage [data-testid="tweetPhoto"] { height: 100px; background: #eee; }
+</style>
+</head>
+<body>
+
+<h1>content.js 回帰テスト</h1>
+<p class="lead">
+  content.js は MV3 の制約で ES モジュールにできず、Node から import できません。
+  そのため実ブラウザでDOMを組み立てて検証します。<br>
+  <b>IntersectionObserver は使いません。</b>バックグラウンドタブでは発火しない
+  （<code>visibilityState: "hidden"</code> だと交差を報告しない）ため、
+  テストが環境依存で通らなくなるためです。かわりに <code>processTweet()</code> を直接呼びます。
+</p>
+
+<div id="summary">実行中…</div>
+<div id="out"></div>
+<div id="stage"></div>
+
+<script>
+// ------------------------------------------------------------------
+// content.js を読み込む前に用意しておくもの
+// ------------------------------------------------------------------
+
+// 連投判定は会話ページ限定なので、パスを /status/<id> に見せかける。
+// content.js は読み込み時に location.pathname を lastPath として控えるので、必ず先に実行する。
+history.replaceState({}, "", "/testuser/status/123");
+
+// background が返す判定結果（href → result）。実際のレスポンス形と同じ。
+const RESULTS = {
+  "https://t.co/SPAM1": { badges: [], domain: "spam-site.example", safe: false },
+  "https://t.co/SPAM2": { badges: [], domain: "spam-site.example", safe: false },
+  "https://t.co/SPAM3": { badges: [], domain: "spam-site.example", safe: false },
+  "https://t.co/QUOTED": { badges: [], domain: "quoted-site.example", safe: false },
+  "https://t.co/NEWS":  { badges: [{ kind: "ads", label: "広告枠14個" }], domain: "news.example", safe: false },
+  "https://t.co/CARD":  { badges: [{ kind: "ads", label: "広告枠14個" }], domain: "card.example", safe: false },
+  "https://t.co/R18":   { badges: [{ kind: "adult", label: "アダルトサイト" }], domain: "r18.example", safe: false },
+  "https://t.co/PAID":  { badges: [{ kind: "paid", label: "有料記事" }], domain: "paid.example", safe: false }
+};
+
+// chrome API スタブ。
+// sendMessage は **必ず非同期** で返すこと。全ポストの問い合わせが先に発行されて
+// 応答だけが後から届く、という実際の順序を再現するため。
+// （同じURLが複数ポストに出たとき1件目が描画されないバグは、この順序でしか再現しない）
+globalThis.chrome = {
+  runtime: {
+    lastError: null,
+    sendMessage(msg, cb) {
+      const key = msg.item.href || msg.item.text;
+      // setTimeout ではなく microtask。バックグラウンドタブでは setTimeout が
+      // 1秒程度まで throttle され、テストが極端に遅くなるため。
+      // 「全ポストの登録が先に終わり、応答は後から来る」という順序はどちらでも再現できる。
+      queueMicrotask(() => cb(RESULTS[key] || { badges: [] }));
+    },
+    onMessage: { addListener() {} }
+  },
+  storage: {
+    sync: { get(defaults, cb) { cb({ ...defaults }); } }
+  }
+};
+</script>
+
+<script>
+// ------------------------------------------------------------------
+// テストハーネス
+// ------------------------------------------------------------------
+let pass = 0, fail = 0;
+const out = document.getElementById("out");
+
+function group(name) {
+  const s = document.createElement("span");
+  s.className = "grp";
+  s.textContent = name;
+  out.appendChild(s);
+}
+function ok(name, cond, why) {
+  const line = document.createElement("div");
+  if (cond) { pass++; line.innerHTML = '<span class="g">  ✓</span> ' + name; }
+  else {
+    fail++;
+    line.innerHTML = '<span class="r">  ✗ ' + name + "</span>";
+    if (why) line.innerHTML += '<div class="why">' + why + "</div>";
+  }
+  out.appendChild(line);
+}
+// microtask を数回ぶん流す。setTimeout を使わないのは、バックグラウンドタブだと
+// 1秒程度まで throttle されてテスト全体が数十秒かかるため。
+const tick = async (n = 4) => { for (let i = 0; i < n * 4; i++) await Promise.resolve(); };
+
+/**
+ * content.js を「毎回必ず取り直して」読み込む。
+ *
+ * 静的な <script src> だとブラウザのキャッシュが効いて、src を書き換えても
+ * 古いコードのままテストが通ってしまう（実際にこれで、わざとバグを入れても
+ * 全件パスするという状態になった＝テストが何も検証していなかった）。
+ */
+async function loadContentScript() {
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "/src/content.js?nocache=" + Date.now() + "-" + Math.random();
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("/src/content.js を読み込めません（プロジェクトルートを配信していますか？）"));
+    document.head.appendChild(s);
+  });
+  if (typeof processTweet !== "function") {
+    throw new Error("content.js は読めたが processTweet が見つかりません");
+  }
+}
+
+const stage = document.getElementById("stage");
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v; else e.setAttribute(k, v);
+  }
+  for (const k of kids) e.append(k);
+  return e;
+}
+const userName = (n) => el("div", { "data-testid": "User-Name" }, n);
+const link = (href, text) => el("a", { href }, text || href);
+
+/** 1ポストぶんのDOMを作る。opts で カード/添付画像/引用元 を足す */
+function makeTweet({ text = "", href, card, photo, quote }) {
+  const t = el("article", { "data-testid": "tweet", role: "article" });
+  t.append(userName("作者"));
+  const body = el("div", { class: "txt" }, text);
+  if (href) body.append(link(href));
+  t.append(body);
+  if (card) {
+    const c = el("div", { "data-testid": "card.wrapper" });
+    c.append(el("div", { "data-testid": "card.layoutLarge.media" }));
+    if (card !== true) c.append(link(card));       // カード自体がリンク
+    t.append(c);
+  }
+  if (photo) t.append(el("div", { "data-testid": "tweetPhoto" }));
+  if (quote) {
+    const q = el("div", { role: "link" });
+    q.append(userName("引用元の作者"));
+    const qb = el("div", {}, quote.text || "");
+    if (quote.href) qb.append(link(quote.href));
+    q.append(qb);
+    if (quote.photo) q.append(el("div", { "data-testid": "tweetPhoto" }));
+    t.append(q);
+  }
+  stage.append(t);
+  return t;
+}
+
+/** シナリオごとに舞台と content.js の内部状態をまっさらにする */
+function reset() {
+  stage.replaceChildren();
+  pending.clear();
+  domainRecords.clear();
+}
+
+const coversOn = (n) => n ? n.querySelectorAll(":scope > .lr-cover").length : 0;
+const overlayOn = (n) => n ? n.querySelectorAll(":scope > .lr-overlay").length : 0;
+const inlineIn = (t) => t.querySelectorAll(".lr-inline").length;
+const kindsOn = (t) => [...t.querySelectorAll(".lr-cover-row, .lr-pill")]
+  .map(e => (e.textContent || "").trim());
+
+async function run() {
+  await loadContentScript();
+
+  // ================================================================
+  group("同じURLが複数ポストにある場合（リプ欄1件目が抜けるバグの回帰）");
+  // 全ポストの問い合わせが先に発行され、応答が後から届く順序で再現する。
+  reset();
+  const t1 = makeTweet({ href: "https://t.co/SPAM1", card: true });
+  const t2 = makeTweet({ href: "https://t.co/SPAM1", card: true });
+  const t3 = makeTweet({ href: "https://t.co/SPAM1", card: true });
+  [t1, t2, t3].forEach(processTweet);
+  await tick(4);
+
+  const card = (t) => t.querySelector('[data-testid="card.wrapper"]');
+  ok("1件目にバッジが出る", coversOn(card(t1)) + overlayOn(card(t1)) > 0,
+     "同じURLの2件目以降が控えを上書きすると、先に処理された1件目が描画されない");
+  ok("2件目にもバッジが出る", coversOn(card(t2)) + overlayOn(card(t2)) > 0);
+  ok("3件目にもバッジが出る", coversOn(card(t3)) + overlayOn(card(t3)) > 0);
+  ok("3件とも連投として数えられる",
+     (domainRecords.get("spam-site.example") || []).length === 3,
+     "カウントも1件しか記録されていないと🚨が永久に出ない");
+  ok("閾値に達して🚨が出る", kindsOn(t1).some(s => s.includes("連投")));
+
+  // ================================================================
+  group("引用タブ（全ポストが同じ引用元を抱える）");
+  reset();
+  const q1 = makeTweet({ text: "これは", quote: { href: "https://t.co/QUOTED", photo: true } });
+  const q2 = makeTweet({ text: "ひどい", quote: { href: "https://t.co/QUOTED", photo: true } });
+  const q3 = makeTweet({ text: "なるほど", quote: { href: "https://t.co/QUOTED", photo: true } });
+  [q1, q2, q3].forEach(processTweet);
+  await tick(4);
+
+  ok("引用元のリンクは連投カウントに入らない",
+     (domainRecords.get("quoted-site.example") || []).length === 0,
+     "引用タブでは並ぶ全ポストが同じ引用元を抱えるので、数えると必ず閾値を超える");
+  ok("引用元に🚨が付かない", !kindsOn(q1).some(s => s.includes("連投")));
+
+  // 本体にも同じリンクがあるなら、それはその人の行為なのでカウントする
+  reset();
+  const b1 = makeTweet({ href: "https://t.co/QUOTED", quote: { href: "https://t.co/QUOTED" } });
+  const b2 = makeTweet({ href: "https://t.co/QUOTED", quote: { href: "https://t.co/QUOTED" } });
+  const b3 = makeTweet({ href: "https://t.co/QUOTED", quote: { href: "https://t.co/QUOTED" } });
+  [b1, b2, b3].forEach(processTweet);
+  await tick(4);
+  ok("本体にも貼られている場合はカウントする",
+     (domainRecords.get("quoted-site.example") || []).length === 3);
+
+  // ================================================================
+  group("描画先: リンクカード vs 投稿者の添付画像");
+  reset();
+  const n1 = makeTweet({ text: "記事です ", href: "https://t.co/NEWS", photo: true });
+  processTweet(n1);
+  await tick(4);
+  ok("本文リンク＋添付画像 → 画像は覆わない",
+     coversOn(n1.querySelector('[data-testid="tweetPhoto"]')) === 0,
+     "添付画像はリンクとは別物。覆うと無関係な写真を隠すことになる");
+  ok("本文リンク＋添付画像 → 画像にバッジも重ねない",
+     overlayOn(n1.querySelector('[data-testid="tweetPhoto"]')) === 0);
+  ok("本文リンク＋添付画像 → リンクの脇に出す", inlineIn(n1) === 1);
+
+  reset();
+  const c1 = makeTweet({ text: "記事です ", card: "https://t.co/CARD" });
+  processTweet(c1);
+  await tick(4);
+  ok("リンクカードにはバッジを載せる",
+     overlayOn(c1.querySelector('[data-testid="card.wrapper"]')) === 1,
+     "カード自体がリンクなので、ここに出すのは常に正しい");
+  ok("リンクカードがあるときはリンク脇に出さない", inlineIn(c1) === 0);
+
+  // ================================================================
+  group("釣り画像（BAIT_COVER_KINDS だけ添付画像を覆う）");
+  reset();
+  const r1 = makeTweet({ text: "見てね ", href: "https://t.co/R18", photo: true });
+  processTweet(r1);
+  await tick(4);
+  ok("🔞は添付画像を覆う",
+     coversOn(r1.querySelector('[data-testid="tweetPhoto"]')) === 1,
+     "リプ欄の誘導は『釣り画像＋本文リンク』が典型。ここを覆えないと意味がない");
+
+  reset();
+  const p1 = makeTweet({ text: "記事 ", href: "https://t.co/PAID", photo: true });
+  processTweet(p1);
+  await tick(4);
+  ok("🔒有料は添付画像を覆わない",
+     coversOn(p1.querySelector('[data-testid="tweetPhoto"]')) === 0,
+     "有料はリンク先の性質の話であって、投稿者の写真を隠す理由がない");
+  ok("🔒有料はリンクの脇に出す", inlineIn(p1) === 1);
+
+  // ================================================================
+  group("scan(): 追加されたノード自身がポストの場合");
+  reset();
+  const solo = makeTweet({ href: "https://t.co/NEWS", card: true });
+  solo.remove();
+  let observed = 0;
+  const realObserve = io.observe.bind(io);
+  io.observe = (t) => { observed++; realObserve(t); };
+  scan(solo);                       // article を直接渡す（querySelectorAll は自分自身を含まない）
+  io.observe = realObserve;
+  ok("article ノード自身を渡しても拾う", observed === 1,
+     "Xはセルごと足すこともarticleだけ差し替えることもある。後者を取りこぼすと永久に判定されない");
+
+  // ================================================================
+  const sum = document.getElementById("summary");
+  sum.className = fail ? "fail" : "pass";
+  sum.textContent = fail ? `${pass} passed, ${fail} FAILED` : `全 ${pass} 件 passed`;
+  window.__lrTestResults = { pass, fail };
+}
+
+run().catch(e => {
+  fail++;
+  const d = document.createElement("div");
+  d.className = "r";
+  d.textContent = "✗ テスト中に例外: " + e.name + ": " + e.message;
+  const s = document.createElement("div");
+  s.className = "why";
+  s.textContent = (e.stack || "").split("\n").slice(0, 4).join(" / ");
+  out.append(d, s);
+  const sum = document.getElementById("summary");
+  sum.className = "fail";
+  sum.textContent = `${pass} passed, ${fail} FAILED（途中で例外）`;
+  window.__lrTestResults = { pass, fail, error: e.message };
+});
+</script>
+</body>
+</html>

@@ -17,7 +17,7 @@ let deepScanOn = false;
 globalThis.chrome = {
   storage: {
     sync: { get: async (defaults) => ({ ...defaults, deepScan: deepScanOn }) },
-    local: { get: async () => ({}), set: async () => {}, clear: async () => {} },
+    local: { get: async () => ({}), set: async () => {}, clear: async () => {}, remove: async () => {} },
     onChanged: { addListener() {} }
   },
   permissions: {
@@ -130,6 +130,30 @@ ok("短縮URLとして検出する",                 kinds(r).includes("shortene
 ok("短縮の先を解決してアダルトを検出する",   kinds(r).includes("adult"));
 ok("最終ホストを着地先に更新する",           r.host === "missav.com");
 ok("連投カウントも着地先ドメインで数える",   r.domain === "missav.com");
+
+console.log("ユーザー登録ドメイン（自分で登録 / 除外）");
+// rules.js はシングルトンなので、テストから差し込めば background 側にもそのまま効く
+// （リモート取得を入れるときも同じ口を使う）。
+const { setUserRules } = await import("../src/rules.js");
+setUserRules({ caution: ["brand-new-domain.example"], exclude: ["missav.com"] });
+// ルールを変えたら判定キャッシュを捨てる（拡張本体では storage.onChanged がこれを行う）
+await new Promise(res => { for (const fn of messageListeners) fn({ type: "clearCache" }, {}, res); });
+
+let fetches = 0;
+const rawFetch = globalThis.fetch;
+globalThis.fetch = async (u) => { fetches++; return rawFetch(u); };
+
+r = await classify({ href: "https://t.co/SHORT", text: "bit.ly/xyz123" });
+ok("短縮の着地先が除外ドメインならバッジを出さない", r.badges.length === 0 && r.excluded === true);
+ok("除外ドメインは連投カウントに乗せない",           r.domain === undefined && r.safe === true);
+
+r = await classify({ href: "https://t.co/ADULT", text: "brand-new-domain.example/lp/1" });
+ok("自分で登録したドメインに caution が出る", kinds(r).includes("caution"));
+
+fetches = 0;
+r = await classify({ href: "https://missav.com/ja/abc-123", text: "missav.com/ja/abc-123" });
+ok("除外ドメインは直リンクでも判定しない", r.badges.length === 0);
+ok("除外ドメインはページを取得もしない",   fetches === 0);
 
 console.log(`\n結果: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

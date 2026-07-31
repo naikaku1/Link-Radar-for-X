@@ -4,7 +4,7 @@
 // cover:true  … 画像/カードを覆う（開く前に必ず気付いてほしいもの）
 // cover:false … 覆わず小さいバッジだけ（知っておくと良いが、危険ではないもの）
 const BADGE = {
-  caution:   { emoji: "⚠️", text: "要注意", cover: true,  cls: "lr-caution",   tip: "既知の要注意ドメイン(報告あり)" },
+  caution:   { emoji: "⚠️", text: "注意",   cover: true,  cls: "lr-caution",   tip: "自分で登録したドメイン" },
   adult:     { emoji: "🔞", text: "R18",    cover: true,  cls: "lr-adult",     tip: "アダルトサイトの可能性" },
   spam:      { emoji: "🚨", text: "連投",   cover: true,  cls: "lr-spam",      tip: "同じリンクが複数のポストに投稿されています" },
   paid:      { emoji: "🔒", text: "有料",   cover: true,  cls: "lr-paid",      tip: "有料記事の可能性" },
@@ -14,6 +14,7 @@ const BADGE = {
   farm:      { emoji: "🏭", text: "まとめ", cover: false, cls: "lr-farm",      tip: "まとめ/転載サイト" },
   pr:        { emoji: "📣", text: "広告",   cover: false, cls: "lr-pr",        tip: "PR/広告・広告ネットワーク経由" },
   affiliate: { emoji: "💰", text: "アフィ", cover: false, cls: "lr-affiliate", tip: "アフィリエイトリンク" },
+  invite:    { emoji: "🎁", text: "招待",   cover: false, cls: "lr-invite",    tip: "招待/紹介リンク(登録すると投稿者に報酬が入ります)" },
   shortener: { emoji: "🔗", text: "短縮",   cover: false, cls: "lr-shortener", tip: "短縮URL(行き先が隠れています)" }
 };
 
@@ -22,9 +23,9 @@ const BADGE_ORDER = Object.keys(BADGE);
 
 const SPAM_REPEAT_MIN = 3;   // リプ欄で同一ドメインがこの件数以上のポストに出たら「連投」
 
-let settings = { badgeStyle: "cover", maxBadges: 4, cat_spam: true };
+let settings = { maxBadges: 4, cat_spam: true };
 try {
-  chrome.storage.sync.get({ badgeStyle: "cover", maxBadges: 4, cat_spam: true }, v => {
+  chrome.storage.sync.get({ maxBadges: 4, cat_spam: true }, v => {
     if (v) settings = { ...settings, ...v };
   });
 } catch {}
@@ -78,9 +79,25 @@ function sortAndCap(badges) {
 // 引用元のカードリンクは、アンカー自身がそのカードの中にあるので、引用ポストかどうかを
 // 判定しなくても自然に引用元のカードが描画先になる。
 // ------------------------------------------------------------------
-const CARD_SEL = '[data-testid="card.wrapper"], [data-testid="tweetPhoto"], ' +
-                 '[data-testid="card.layoutLarge.media"], [data-testid="card.layoutSmall.media"], ' +
-                 '[data-testid="videoPlayer"], [data-testid="previewInterstitial"]';
+// リンクカード＝それ自体がリンク。クリックすると外部サイトに飛ぶ。
+// このリンクを判定したのだから、ここを覆うのは常に正しい。
+const LINK_CARD_SEL = '[data-testid="card.wrapper"], ' +
+                      '[data-testid="card.layoutLarge.media"], [data-testid="card.layoutSmall.media"]';
+
+// 投稿者が添付した画像/動画。**リンクとは別物**。
+// 実機で確認: tweetPhoto のアンカーは /user/status/<id>/photo/1 で、Xの画像ビューアに飛ぶだけ。
+// 本文にリンクがあるからといってこの画像を覆うと、無関係な写真を隠すことになる
+// （実例: ニュース媒体の「本文にリンク＋別途スクショを添付」したポスト）。
+const MEDIA_SEL = '[data-testid="tweetPhoto"], [data-testid="videoPlayer"], ' +
+                  '[data-testid="previewInterstitial"]';
+
+const CARD_SEL = LINK_CARD_SEL + ", " + MEDIA_SEL;
+
+// 添付画像まで覆ってよいカテゴリ。
+// 「その画像自体が誘導の一部」であるものに限る。リプ欄のアダルト誘導や連投スパムは
+// 釣り画像＋本文リンクの組み合わせが典型で、画像を覆うことにこそ意味がある。
+// 一方 🔒有料 や 📦DL は「リンク先の性質」の話なので、投稿者の写真を隠す理由が無い。
+const BAIT_COVER_KINDS = new Set(["adult", "spam", "caution"]);
 
 /**
  * 引用元ブロックを探す。
@@ -133,13 +150,28 @@ function renderTargetFor(anchor, tweet) {
   const inCard = anchor.closest(CARD_SEL);
   if (inCard) return inCard;
 
-  // 2) 本文中のテキストリンク。引用元の中のリンクなら、引用元の中の画像だけを対象にする。
+  // 2) 本文中のテキストリンク。引用元の中のリンクなら、引用元の中のカードだけを対象にする。
   const quote = quoteRootOf(anchor, tweet);
-  if (quote) return quote.querySelector(CARD_SEL);
+  if (quote) return quote.querySelector(LINK_CARD_SEL);
 
-  // 3) 本体のリンク。引用元の画像を誤って覆わないよう、引用元の外にあるものだけ使う。
-  for (const c of tweet.querySelectorAll(CARD_SEL)) {
+  // 3) 本体のテキストリンク。**リンクカードだけ**を対象にする。
+  //    添付画像はこのリンクとは無関係なので、ここでは選ばない（BAIT_COVER_KINDS のときだけ別途使う）。
+  //    引用元のカードを誤って覆わないよう、引用元の外にあるものに限る。
+  for (const c of tweet.querySelectorAll(LINK_CARD_SEL)) {
     if (!quoteRootOf(c, tweet)) return c;
+  }
+  return null;
+}
+
+/**
+ * 「釣り画像」として覆ってよい添付メディアを探す。
+ * リンクカードが無く、かつ 🔞/🚨/⚠️ が出るときだけ使う。
+ */
+function baitMediaFor(anchor, tweet) {
+  const quote = quoteRootOf(anchor, tweet);
+  if (quote) return quote.querySelector(MEDIA_SEL);
+  for (const m of tweet.querySelectorAll(MEDIA_SEL)) {
+    if (!quoteRootOf(m, tweet)) return m;
   }
   return null;
 }
@@ -152,7 +184,12 @@ function makePill(bd, small) {
   if (!b) return null;
   const el = document.createElement("span");
   el.className = "lr-pill " + b.cls + (small ? " lr-pill-sm" : "");
-  el.textContent = `${b.emoji} ${b.text}`;
+  // 絵文字とラベルは別のスパンにする。まとめて1つのテキストノードにすると、
+  // 絵文字フォントの指定がラベルにも効いて "R18" の数字の字形が崩れる。
+  const emo = document.createElement("span");
+  emo.className = "lr-pill-emo";
+  emo.textContent = b.emoji;
+  el.append(emo, b.text);
   el.title = bd.label ? `${b.tip}｜${bd.label}` : b.tip;
   return el;
 }
@@ -202,18 +239,32 @@ function render(target, anchor, badges, tweet) {
   if (!badges || !badges.length) return;
 
   const shown = sortAndCap(badges);
-  const covers = settings.badgeStyle === "pill" ? [] : shown.filter(b => BADGE[b.kind] && BADGE[b.kind].cover);
+  const covers = shown.filter(b => BADGE[b.kind] && BADGE[b.kind].cover);
   const pills = shown.filter(b => !covers.includes(b));
 
+  // リンクカードが無いポスト（本文にリンク＋添付画像、など）。
+  // 添付画像はリンクとは別物なので原則は「リンクの脇にバッジ」だが、
+  // 釣り画像そのものを見せたくないカテゴリのときだけ画像を覆う。
+  if (!target && covers.some(b => BAIT_COVER_KINDS.has(b.kind))) {
+    target = baitMediaFor(anchor, tweet);
+  }
+
+  // 前回の描画を消す。
+  // 描画先は「リンク脇 → 画像の上」に後から変わりうる（画像が遅れて挿入されるため）ので、
+  // 今回使う側だけでなく両方を消さないと、リンク脇の小バッジが残ったまま画像も覆われる。
+  if (target) target.querySelectorAll(":scope > .lr-cover, :scope > .lr-overlay").forEach(n => n.remove());
+  const inlineHost = anchor && (anchor.parentElement || anchor);
+  if (inlineHost && inlineHost.querySelectorAll) {
+    inlineHost.querySelectorAll(":scope > .lr-inline").forEach(n => n.remove());
+  }
+
   if (target) {
-    target.querySelectorAll(":scope > .lr-cover, :scope > .lr-overlay").forEach(n => n.remove());
     renderOnCard(target, covers, pills, !!quoteRootOf(target, tweet));
   } else {
-    (anchor.parentElement || anchor).querySelectorAll(":scope > .lr-inline").forEach(n => n.remove());
     const wrap = document.createElement("span");
     wrap.className = "lr-inline";
     for (const bd of shown) { const p = makePill(bd); if (p) wrap.appendChild(p); }
-    if (wrap.childNodes.length) (anchor.parentElement || anchor).appendChild(wrap);
+    if (wrap.childNodes.length) inlineHost.appendChild(wrap);
   }
 }
 
@@ -233,6 +284,16 @@ function isConversationPage() {
 function trackForSpam(rec) {
   if (settings.cat_spam === false) return;
   if (!isConversationPage() || !rec.domain || rec.safe) return;
+
+  // 引用元のリンクは数えない。
+  //
+  // 引用タブ(/status/<id>/quotes)を開くと、並んでいる全ポストが**同じ引用元**を抱えている。
+  // 引用元の中のリンクをそのまま数えると、1つの投稿がポスト数ぶん重複カウントされて
+  // 必ず閾値を超え、無関係な引用元に🚨連投が付く。会話ページで同じポストが何度も
+  // 引用されている場合も同じことが起きる。
+  // 検出したいのは「別々の人が同じリンクを貼っている」ことなので、
+  // 同一投稿の複製である引用元は、そもそも証拠にならない。
+  if (rec.fromQuote) return;
 
   let list = domainRecords.get(rec.domain);
   if (!list) { list = []; domainRecords.set(rec.domain, list); }
@@ -255,7 +316,11 @@ function trackForSpam(rec) {
 // SPAで会話ページを移動したらカウントをリセット
 let lastPath = location.pathname;
 setInterval(() => {
-  if (location.pathname !== lastPath) { lastPath = location.pathname; domainRecords.clear(); }
+  if (location.pathname !== lastPath) {
+    lastPath = location.pathname;
+    domainRecords.clear();
+    pending.clear();   // 前のページのポストを覚えたままにしない
+  }
 }, 1000);
 
 // ------------------------------------------------------------------
@@ -270,8 +335,12 @@ function processTweet(tweet) {
   const byHref = new Map();
   for (const a of anchors) {
     const target = renderTargetFor(a, tweet);
+    const fromQuote = !!quoteRootOf(a, tweet);
     const prev = byHref.get(a.href);
-    if (!prev || (!prev.target && target)) byHref.set(a.href, { anchor: a, target });
+    if (!prev) { byHref.set(a.href, { anchor: a, target, fromQuote }); continue; }
+    if (!prev.target && target) { prev.anchor = a; prev.target = target; }
+    // 本体にも同じリンクがあるなら、それは引用元由来ではない＝連投カウントの対象
+    if (!fromQuote) prev.fromQuote = false;
   }
 
   // 引用元にアンカーが1つも無い場合の補完。
@@ -284,7 +353,8 @@ function processTweet(tweet) {
       byHref.set("text:" + tok, {
         anchor: quote,                                  // 描画先が無いときの挿入位置
         target: quote.querySelector(CARD_SEL) || quote, // 画像が無ければ引用元ブロック自体を覆う
-        textOnly: tok
+        textOnly: tok,
+        fromQuote: true                                 // 引用元そのものなので連投カウントしない
       });
     }
   }
@@ -303,7 +373,7 @@ function processTweet(tweet) {
       : { href: u.anchor.href, text: (u.anchor.innerText || u.anchor.textContent || "").trim() };
     const key = item.href || item.text;
     // 取得完了後に届く差分(classifyUpdate)で描き直せるよう、描画先を控えておく
-    pending.set(key, { target: u.target, anchor: u.anchor, tweet });
+    addPending(key, { target: u.target, anchor: u.anchor, tweet, fromQuote: !!u.fromQuote });
 
     try {
       chrome.runtime.sendMessage({ type: "classify", item }, (resp) => {
@@ -322,26 +392,60 @@ function processTweet(tweet) {
 //     2回目 … リンク先を取得して分かる分（classifyUpdate で後から届く）
 //   こうしないと、取得が終わるまでバッジが1つも出ず「遅い」と感じる。
 // ------------------------------------------------------------------
-const pending = new Map();   // key -> {target, anchor, tweet}
+// key -> [{target, anchor, tweet}, ...]
+//
+// ここは必ず配列にすること。リプ欄では「同じURLが複数のポストに貼られる」のが普通
+// （それ自体が連投スパムの手口なので、まさに判定したいケース）。
+// key ごとに1つしか覚えないと、同じURLの2件目以降が控えを上書きし、
+// 先に処理されたポスト＝リプ欄の上のほうが描画されないまま残っていた。
+// backgroundへの問い合わせは全ポスト分が同期的に発行されて応答だけが後から来るため、
+// 「最後に登録したポストにだけバッジが付く」という形で出る。
+const pending = new Map();
+
+function addPending(key, slot) {
+  let list = pending.get(key);
+  if (!list) { list = []; pending.set(key, list); }
+  // 同じポストの同じ位置を二重に持たない（リトライで再処理されたとき用）
+  const i = list.findIndex(s => s.tweet === slot.tweet && s.anchor === slot.anchor);
+  if (i >= 0) list[i] = slot; else list.push(slot);
+}
 
 function applyResult(key, resp, onRetry) {
-  const slot = pending.get(key);
-  if (!slot || !slot.tweet.isConnected) return;
+  const list = pending.get(key);
+  if (!list || !list.length) return;
 
   const r = resp.paywall && resp.paywall.reason;
   if (r === "fetch-failed" || r === "resolve-miss") { if (onRetry) onRetry(); return; }
 
-  const badges = resp.badges ? [...resp.badges] : [];
-  render(slot.target, slot.anchor, badges, slot.tweet);
+  // DOMから消えたポスト（スクロールで破棄された等）は覚えておく意味がない
+  const alive = list.filter(s => s.tweet.isConnected);
+  if (alive.length !== list.length) pending.set(key, alive);
 
-  // 連投カウントは行き先が確定してから（partialの時点ではまだ短縮URLのドメイン）
-  if (!resp.partial) {
-    trackForSpam({
-      target: slot.target, anchor: slot.anchor, badges, tweet: slot.tweet,
-      domain: resp.domain, safe: !!resp.safe
-    });
-    pending.delete(key);
+  for (const slot of alive) {
+    // 描画先を取り直す。
+    // Xは画像/カードを本文より遅れて挿入することがあり、processTweetの時点では
+    // まだ無いことがある。そこで決めた target(null) をそのまま使い続けると、
+    // 画像が出てきても覆えずリンク脇の小バッジのままになる（実機で確認）。
+    // cover対象(🔞/🚨/🔒/📦)では「画像を覆う」という中心機能が黙って効かなくなる。
+    // ※ textOnly（引用元の素テキストURL）は anchor が <a> ではないので取り直さない。
+    if (!slot.target && slot.anchor && slot.anchor.tagName === "A") {
+      const retarget = renderTargetFor(slot.anchor, slot.tweet);
+      if (retarget) slot.target = retarget;
+    }
+
+    // badgesはポストごとに別配列にする（連投ラベルの追記が他のポストに混ざらないように）
+    const badges = resp.badges ? [...resp.badges] : [];
+    render(slot.target, slot.anchor, badges, slot.tweet);
+
+    // 連投カウントは行き先が確定してから（partialの時点ではまだ短縮URLのドメイン）
+    if (!resp.partial) {
+      trackForSpam({
+        target: slot.target, anchor: slot.anchor, badges, tweet: slot.tweet,
+        domain: resp.domain, safe: !!resp.safe, fromQuote: slot.fromQuote
+      });
+    }
   }
+  if (!resp.partial) pending.delete(key);
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -355,10 +459,15 @@ const io = new IntersectionObserver((entries) => {
   }
 }, { rootMargin: "150px" });
 
+const TWEET_SEL = 'article[data-testid="tweet"], article[role="article"]';
+
 function scan(root) {
   const base = root instanceof Element ? root : document;
-  const tweets = base.querySelectorAll('article[data-testid="tweet"], article[role="article"]');
-  tweets.forEach(t => { if (!t.dataset.lrDone) io.observe(t); });
+  // 追加されたノード自身がポストのこともある（querySelectorAllは自分自身を含まない）。
+  // Xは差し替え時にセル(div)ごと足すこともarticleだけ足すこともあり、
+  // 後者を取りこぼすと、そのポストは以後まったく判定されないままになる。
+  if (base instanceof Element && base.matches(TWEET_SEL) && !base.dataset.lrDone) io.observe(base);
+  base.querySelectorAll(TWEET_SEL).forEach(t => { if (!t.dataset.lrDone) io.observe(t); });
 }
 
 scan(document);

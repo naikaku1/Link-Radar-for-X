@@ -6,11 +6,13 @@
 //   finalUrl: 解決できた最終URL（t.co/短縮の行き先開示用）
 import {
   classifyByUrl, extractRelayTarget, parseUrl, isSafeHost, registrableDomain,
-  urlFromDisplayText, hostFromDisplayText
+  urlFromDisplayText, hostFromDisplayText, isUserExcluded
 } from "./classifier.js";
 import { detectPaywallFromHtml } from "./paywall.js";
 import { analyzeHtml } from "./pagesignals.js";
-import { matchPaywallSite, DEFAULT_SETTINGS, SHORTENER_HOSTS } from "./rules.js";
+import {
+  matchPaywallSite, DEFAULT_SETTINGS, SHORTENER_HOSTS, setUserRules, USER_RULE_KEYS
+} from "./rules.js";
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 8000;
@@ -19,6 +21,12 @@ const ITEM_BUDGET_MS = 12000;       // 1リンクに使ってよい合計時間�
 const MAX_HTML_BYTES = 1_500_000;   // 巨大ページで判定コストが跳ねるのを防ぐ
 const MAX_RELAY_HOPS = 4;           // 中継ページを追う上限
 const RELAY_MAX_BYTES = 4000;       // これより小さいHTMLは「中継ページ」の可能性がある
+
+// storage.local の既定クォータは約10MB。1件あたり数百バイトなので、
+// 何もしないと数週間で埋まる（TTL切れの項目も消えずに残るため）。
+// 埋まると set が例外になり、以後ディスクキャッシュが黙って効かなくなるので自分で刈る。
+const CACHE_MAX_ENTRIES = 3000;
+const PRUNE_EVERY_WRITES = 200;
 
 // 判定ルールを変更したのに古い結果が残り続けると、直したはずの誤検出が最大6時間消えない。
 // 拡張機能のバージョンが変わったらキャッシュを丸ごと捨てる。
@@ -46,17 +54,31 @@ const queue = [];
 let settings = { ...DEFAULT_SETTINGS };
 let hasAllUrls = false;
 
+/**
+ * 判定結果のキャッシュを丸ごと捨てる。
+ * memCache だけでは足りない: getCached は storage.local も見るので、
+ * ルールを変えても既に見たリンクは最大6時間だけ古い判定のままになる。
+ */
+async function clearResultCache() {
+  memCache.clear();
+  try {
+    await chrome.storage.local.clear();
+    await chrome.storage.local.set({ [VERSION_KEY]: RULES_VERSION });
+  } catch {}
+}
+
 async function loadSettings() {
   try {
     const v = await chrome.storage.sync.get(DEFAULT_SETTINGS);
     settings = { ...DEFAULT_SETTINGS, ...v };
+    setUserRules({ caution: settings.userCaution, exclude: settings.userExclude });
   } catch {}
   try {
     hasAllUrls = await chrome.permissions.contains({ origins: ["<all_urls>"] });
   } catch { hasAllUrls = false; }
 }
 loadSettings();
-invalidateCacheOnUpdate();
+invalidateCacheOnUpdate().then(pruneCache);
 if (chrome.runtime.onInstalled) {
   // 更新直後は必ず作り直す（reason: "update" / "install" どちらも）
   chrome.runtime.onInstalled.addListener(() => { chrome.storage.local.clear().catch(() => {}); memCache.clear(); });
@@ -64,7 +86,14 @@ if (chrome.runtime.onInstalled) {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "sync") return;
   for (const [k, v] of Object.entries(changes)) settings[k] = v.newValue;
-  memCache.clear();   // 設定が変わったら判定結果を作り直す
+
+  if (USER_RULE_KEYS.some(k => k in changes)) {
+    // ルール自体が変わった → storage.local に残った古い判定も捨てないと最大6時間反映されない
+    setUserRules({ caution: settings.userCaution, exclude: settings.userExclude });
+    clearResultCache();
+  } else {
+    memCache.clear();   // カテゴリのON/OFF等。再判定は走るのでmemCacheだけでよい
+  }
 });
 if (chrome.permissions.onAdded) {
   chrome.permissions.onAdded.addListener(() => { loadSettings(); memCache.clear(); });
@@ -102,10 +131,45 @@ async function getCached(key) {
   } catch {}
   return null;
 }
+let writesSincePrune = 0;
+
 async function setCached(key, result) {
   const e = { result, ts: Date.now() };
   memCache.set(key, e);
-  try { await chrome.storage.local.set({ [key]: e }); } catch {}
+  try {
+    await chrome.storage.local.set({ [key]: e });
+    if (++writesSincePrune >= PRUNE_EVERY_WRITES) { writesSincePrune = 0; pruneCache(); }
+  } catch {
+    // クォータ超過の可能性が高い。刈ってから次回に備える（この1件は諦める）
+    writesSincePrune = 0;
+    pruneCache();
+  }
+}
+
+/**
+ * TTL切れの項目を捨て、それでも多ければ古い順に削る。
+ * chrome.alarms を使えば定期実行できるが、権限を1つ増やすと審査で説明する範囲が広がるので、
+ * 「起動時」＋「一定回数書き込むごと」で回す。service workerは頻繁に落ちて起動し直すため、
+ * 実運用ではこれで十分に刈られる。
+ */
+async function pruneCache() {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const now = Date.now();
+    const drop = [];
+    const alive = [];
+    for (const [k, v] of Object.entries(all)) {
+      if (k === VERSION_KEY) continue;
+      if (!v || typeof v.ts !== "number" || now - v.ts >= CACHE_TTL_MS) drop.push(k);
+      else alive.push([k, v.ts]);
+    }
+    if (alive.length > CACHE_MAX_ENTRIES) {
+      alive.sort((a, b) => a[1] - b[1]);                       // 古い順
+      for (const [k] of alive.slice(0, alive.length - CACHE_MAX_ENTRIES)) drop.push(k);
+    }
+    if (drop.length) await chrome.storage.local.remove(drop);
+    return drop.length;
+  } catch { return 0; }
 }
 
 // 表示テキストからのホスト/URL抽出は classifier.js に集約してある。
@@ -131,6 +195,21 @@ async function fetchWithBody(url) {
 }
 
 function safeHost(u) { try { return new URL(u).hostname.toLowerCase(); } catch { return null; } }
+
+/** ホスト名がユーザーの除外リストに載っているか */
+function hostExcluded(host) {
+  if (!host) return false;
+  const u = parseUrl("https://" + host);
+  return !!u && isUserExcluded(u);
+}
+
+/**
+ * 除外登録されたドメイン用の空結果。
+ * 連投カウントにも乗せたくないので safe:true とし、domain も返さない。
+ */
+function emptyResult(host) {
+  return { badges: [], paywall: null, host: host || undefined, safe: true, excluded: true };
+}
 
 /**
  * 中継ページを辿って実体ページまで到達する。
@@ -188,7 +267,7 @@ function classifyQuick({ href, text }) {
     badges.push({ kind, label });
   };
   const addBadges = (o) => {
-    add("affiliate", o.affiliate); add("shortener", o.shortener); add("pr", o.pr);
+    add("affiliate", o.affiliate); add("invite", o.invite); add("shortener", o.shortener); add("pr", o.pr);
     add("farm", o.farm); add("caution", o.caution); add("adult", o.adult); add("download", o.download);
   };
 
@@ -199,6 +278,7 @@ function classifyQuick({ href, text }) {
   if (displayUrl) addBadges(classifyByUrl(displayUrl));
 
   const host = (hrefHost && hrefHost !== "t.co") ? hrefHost : displayHost;
+  if (hostExcluded(host)) return { ...emptyResult(host), partial: true };
   const parsed = host ? parseUrl("https://" + host) : null;
   return {
     badges,
@@ -225,6 +305,7 @@ async function classifyItem({ href, text }) {
     };
     const addBadges = (obj) => {
       add("affiliate", obj.affiliate);
+      add("invite", obj.invite);
       add("shortener", obj.shortener);
       add("pr", obj.pr);
       add("farm", obj.farm);
@@ -289,6 +370,10 @@ async function classifyItem({ href, text }) {
     // 解決できた本URLで、URLのみの判定をやり直す（短縮の裏に隠れたアダルト/アフィ等を拾う）
     if (resolved && realUrl) addBadges(classifyByUrl(realUrl));
 
+    // 除外登録されたドメインは、ページを取得もしないし何も出さない。
+    // classifyByUrl 側でも弾いているが、ページ内容の判定はここで止めないと通ってしまう。
+    if (hostExcluded(realHost)) return emptyResult(realHost);
+
     // 3) ページ内容の判定（有料 / 広告量 / 登録必須 / アダルト自己申告）
     let paywall = null;
     const site = realHost ? matchPaywallSite(realHost) : null;
@@ -321,6 +406,8 @@ async function classifyItem({ href, text }) {
           addBadges(sig);
           // 着地先URLで再判定（短縮URL・多段中継の裏に隠れたアダルト/アフィ等はここで出る）
           addBadges(classifyByUrl(got.finalUrl || realUrl));
+          // 中継を辿った先が除外登録されていることがある（短縮URLの行き先など）
+          if (hostExcluded(landedHost)) return emptyResult(landedHost);
           // 連投カウントの単位とポップアップのホスト表示を、実際の着地先に合わせる
           if (landedHost && landedHost !== realHost) realHost = landedHost;
           if (got.finalUrl && got.finalUrl !== realUrl) { realUrl = got.finalUrl; resolved = true; }

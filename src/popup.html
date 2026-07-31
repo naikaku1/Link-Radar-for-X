@@ -26,15 +26,22 @@
   .out .why { color: #666; font-size: 11px; }
   .presets { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
   .presets button { width: auto; margin: 0; padding: 3px 8px; font-size: 11px; border-radius: 999px; }
+  .userlist { border: 1px solid #d4d4d8; border-radius: 8px; padding: 10px; background: #fafafa; }
+  .userlist input { width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; font-family: ui-monospace, monospace; }
+  .btnrow { display: flex; gap: 6px; margin-top: 6px; }
+  .btnrow button { flex: 1; padding: 6px 4px; font-size: 12px; border: 1px solid #999; border-radius: 6px; background: #fff; cursor: pointer; }
+  .btnrow button:hover { background: #f0f0f0; }
+  .sub { font-size: 11px; color: #666; margin-top: 10px; font-weight: 700; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .chips .empty { font-size: 11px; color: #999; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: #fff; border: 1px solid #ccc; border-radius: 999px; padding: 2px 4px 2px 8px; word-break: break-all; }
+  .chip button { border: none; background: #eee; color: #555; border-radius: 999px; width: 16px; height: 16px; line-height: 1; font-size: 11px; padding: 0; cursor: pointer; flex: none; }
+  .chip button:hover { background: #dc2626; color: #fff; }
 </style>
 </head>
 <body>
   <h1>判定するカテゴリ</h1>
   <div id="cats"></div>
-
-  <h1>バッジの見せ方</h1>
-  <label class="card"><input type="radio" name="badgeStyle" value="cover"><span><b>画像を赤で覆う</b><br><span class="desc">全カテゴリ共通。開く前に必ず気付ける</span></span></label>
-  <label class="card"><input type="radio" name="badgeStyle" value="pill"><span><b>小さいバッジを重ねる</b><br><span class="desc">画像は隠れないが見落としやすい</span></span></label>
 
   <h1>リンク先の取得</h1>
   <div class="deep">
@@ -44,8 +51,23 @@
       <span class="desc">有料 / 広告過多 / 登録必須 / 短縮の行き先</span></span>
     </label>
     <div class="warn">
-      画面に出たリンクの中身を背景で取得します。取得先は各サイトのみで、外部サーバーへは何も送信しません。OFFにすると上記4つは判定できなくなります。
+      画面に出たリンクの中身を背景で取得します。開発者のサーバーへは何も送信しません。<br>
+      ただし<b>クリックしなくても取得する</b>ため、リンク先のサイトにはあなたのIPアドレスが渡ります。気になる場合はOFFにしてください（上記4つは判定できなくなります）。
     </div>
+  </div>
+
+  <h1>自分で登録したドメイン</h1>
+  <div class="userlist">
+    <input id="userDomain" type="text" placeholder="ドメイン または URL を貼る" spellcheck="false">
+    <div class="btnrow">
+      <button id="addCaution">⚠️ 注意に追加</button>
+      <button id="addExclude">判定から除外</button>
+    </div>
+    <div id="userErr" class="warn"></div>
+    <div class="sub">⚠️ 注意（画像を覆います）</div>
+    <div id="listCaution" class="chips"></div>
+    <div class="sub">判定から除外（何も出しません）</div>
+    <div id="listExclude" class="chips"></div>
   </div>
 
   <h1>動作テスト</h1>

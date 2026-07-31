@@ -1,9 +1,11 @@
 // popup.js — 設定UI。カテゴリのON/OFFは rules.js の CATEGORIES から自動生成する
 // （＝新しい判定を rules.js に足せば、UIにも自動で出る）。
-import { CATEGORIES, DEFAULT_SETTINGS } from "./rules.js";
+import {
+  CATEGORIES, DEFAULT_SETTINGS, normalizeDomain, normalizeDomainList, USER_LIST_MAX
+} from "./rules.js";
 
 const EMOJI = {
-  paid: "🔒", affiliate: "💰", shortener: "🔗", pr: "📣", farm: "🏭",
+  paid: "🔒", affiliate: "💰", invite: "🎁", shortener: "🔗", pr: "📣", farm: "🏭",
   adult: "🔞", spam: "🚨", download: "📦", caution: "⚠️",
   ads: "📊", login: "🔑"
 };
@@ -33,17 +35,101 @@ chrome.storage.sync.get(DEFAULT_SETTINGS, (v) => {
     catsEl.appendChild(label);
   }
 
-  // --- バッジの見せ方 ---
-  document.querySelectorAll('input[name="badgeStyle"]').forEach(r => {
-    r.checked = (r.value === s.badgeStyle);
-    r.addEventListener("change", () => {
-      if (r.checked) chrome.storage.sync.set({ badgeStyle: r.value });
-    });
-  });
-
   // --- リンク先の取得（既定ON）---
   deepEl.checked = s.deepScan !== false;
 });
+
+// ------------------------------------------------------------------
+// 自分で登録したドメイン
+//   caution … ⚠️を出したいドメイン（同梱リストではなく利用者の設定なので断定してよい）
+//   exclude … 誤検出されたので判定対象から完全に外したいドメイン
+//   公開後に利用者が打てる唯一の手なので、消すのもワンクリックでできるようにする。
+// ------------------------------------------------------------------
+const domainEl = document.getElementById("userDomain");
+const errEl = document.getElementById("userErr");
+const LIST_EL = { userCaution: document.getElementById("listCaution"),
+                  userExclude: document.getElementById("listExclude") };
+
+function showErr(msg) {
+  errEl.textContent = msg || "";
+  if (msg) setTimeout(() => { if (errEl.textContent === msg) errEl.textContent = ""; }, 4000);
+}
+
+function renderList(key, domains) {
+  const el = LIST_EL[key];
+  el.replaceChildren();
+  if (!domains.length) {
+    const s = document.createElement("span");
+    s.className = "empty";
+    s.textContent = "（なし）";
+    el.appendChild(s);
+    return;
+  }
+  for (const d of domains) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.append(d);
+    const x = document.createElement("button");
+    x.textContent = "✕";
+    x.title = d + " を削除";
+    x.addEventListener("click", () => removeDomain(key, d));
+    chip.appendChild(x);
+    el.appendChild(chip);
+  }
+}
+
+/**
+ * 判定側 (setUserRules) と同じ正規化を通して読む。
+ * そうしないと「表示されている文字列」と「実際に効いている値」がずれる
+ * （別端末からsyncで来た値や、古いバージョンが書いた値が生のまま入りうる）。
+ */
+function readLists() {
+  return new Promise(res => {
+    chrome.storage.sync.get({ userCaution: [], userExclude: [] }, v => {
+      res({
+        userCaution: normalizeDomainList(v.userCaution),
+        userExclude: normalizeDomainList(v.userExclude)
+      });
+    });
+  });
+}
+
+async function addDomain(key) {
+  const d = normalizeDomain(domainEl.value);
+  if (!d) { showErr("ドメインとして読めませんでした（例: example.com）"); return; }
+
+  const lists = await readLists();
+  const other = key === "userCaution" ? "userExclude" : "userCaution";
+  if (lists[key].includes(d)) { showErr(`${d} は既に登録済みです`); return; }
+  if (lists[key].length >= USER_LIST_MAX) { showErr(`登録は${USER_LIST_MAX}件までです`); return; }
+
+  // 同じドメインを「注意」と「除外」の両方に入れると挙動が矛盾するので、片方から外す
+  const next = { [key]: [...lists[key], d] };
+  if (lists[other].includes(d)) next[other] = lists[other].filter(x => x !== d);
+
+  chrome.storage.sync.set(next, () => {
+    if (chrome.runtime.lastError) { showErr("保存できませんでした: " + chrome.runtime.lastError.message); return; }
+    domainEl.value = "";
+    showErr("");
+    refreshLists();
+  });
+}
+
+async function removeDomain(key, d) {
+  const lists = await readLists();
+  chrome.storage.sync.set({ [key]: lists[key].filter(x => x !== d) }, refreshLists);
+}
+
+async function refreshLists() {
+  const lists = await readLists();
+  renderList("userCaution", lists.userCaution);
+  renderList("userExclude", lists.userExclude);
+}
+
+document.getElementById("addCaution").addEventListener("click", () => addDomain("userCaution"));
+document.getElementById("addExclude").addEventListener("click", () => addDomain("userExclude"));
+domainEl.addEventListener("keydown", (e) => { if (e.key === "Enter") addDomain("userCaution"); });
+refreshLists();
 
 // ------------------------------------------------------------------
 // 動作テスト: URLを background に投げて、Xで出るのと同じ判定結果を見る
@@ -55,6 +141,7 @@ const urlEl = document.getElementById("testUrl");
 const PRESETS = [
   ["🔞 アダルト",  "https://missav.com/ja/abc-123"],
   ["💰 アフィ",    "https://www.amazon.co.jp/dp/B0CXXX?tag=test-22"],
+  ["🎁 招待",      "https://lite.tiktok.com/t/ZSabcdefg/"],
   ["🔗 短縮",      "https://bit.ly/3abcXYZ"],
   ["📦 DL",        "https://cdn.example.info/app.apk"],
   ["🔒 有料(日経)", "https://www.nikkei.com/article/DGXZQOUB23B6M0T20C26A7000000/"],
@@ -82,6 +169,13 @@ function runTest() {
       return;
     }
     outEl.replaceChildren();
+    if (resp.excluded) {
+      const s = document.createElement("div");
+      s.className = "none";
+      s.textContent = "⛔ 除外登録済みのドメインです（判定しません）";
+      outEl.appendChild(s);
+      return;
+    }
     if (!resp.badges || !resp.badges.length) {
       const s = document.createElement("div");
       s.className = "none";

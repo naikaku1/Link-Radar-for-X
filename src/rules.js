@@ -64,7 +64,11 @@ export const SHORTENER_HOSTS = [
   "rebrand.ly", "lnkd.in", "dlvr.it", "ift.tt", "trib.al", "shorturl.at", "j.mp",
   "s.id", "rb.gy", "shrtco.de", "urlz.fr", "v.gd", "t.ly", "1lnk.to", "shorturl.gg",
   "linktr.ee", "lit.link", "bit.do", "soo.gd", "clik.cc", "tiny.cc", "short.gy",
-  "onelink.to", "ur0.cc", "ur0.link", "x.gd", "0mm.jp", "s.gd"
+  "onelink.to", "ur0.cc", "ur0.link", "x.gd", "0mm.jp", "s.gd",
+  // アプリの計測/ディープリンク基盤。招待キャンペーンのリンクはほぼこれ経由で、
+  // 短縮URLと同じく「行き先(どのアプリ/どのストア)が隠れている」ので同じ扱いにする。
+  "onelink.me", "app.link", "bnc.lt", "page.link", "adj.st", "go.link",
+  "sng.link", "smart.link", "appsflyer.com"
 ];
 
 // ------------------------------------------------------------------
@@ -72,10 +76,41 @@ export const SHORTENER_HOSTS = [
 // ------------------------------------------------------------------
 export const PR_RULES = [
   { id: "prtimes", label: "プレスリリース", hostRe: /(^|\.)(prtimes\.jp|atpress\.ne\.jp|value-press\.com|dreamnews\.jp)$/ },
-  { id: "utm-pr",  label: "PR/広告",        paramAny: ["utm_medium=affiliate", "utm_medium=paid", "utm_medium=cpc", "utm_medium=display", "utm_source=taboola", "utm_source=outbrain"] },
+  // ※ utm_medium=affiliate はここに入れない。AFFILIATE_RULES(generic-aff)が拾うので、
+  //    同じ事実に 💰アフィ と 📣広告 の2枠を使ってしまい、maxBadges(既定4)を無駄に埋める。
+  { id: "utm-pr",  label: "PR/広告",        paramAny: ["utm_medium=paid", "utm_medium=cpc", "utm_medium=display", "utm_source=taboola", "utm_source=outbrain"] },
   // 広告ネットワーク/ネイティブ広告(Outbrain/Taboola等)の遷移リンク＝"広告経由"であることは事実
   { id: "adnet",   label: "広告リンク",      hostRe: /(^|\.)(doubleclick\.net|googlesyndication\.com|googleadservices\.com|outbrain\.com|taboola\.com|adnxs\.com|popin\.cc|logly\.co\.jp|zucks\.net|i-mobile\.co\.jp|microad\.jp|geniee\.co\.jp)$/ }
 ];
+
+// ------------------------------------------------------------------
+// 3.5) 招待/紹介リンク（TikTok Lite等の「招待した側に報酬が入る」リンク）
+//    バズ投稿のリプ欄に大量に湧くが、アフィリエイトと同じで危険ではない。
+//    ラベルは中立に「招待/紹介」。事実として "投稿者に報酬が入るリンク" と分かればよい。
+//
+//    設計方針: アプリ名の列挙は追いかけきれないので、主軸は
+//      (a) 招待コードを表すクエリパラメータ  (b) 招待用のパスセグメント
+//    という「招待キャンペーンなら必ず持つ構造」で判定する。
+//    アプリ固有ルールは、(a)(b)で拾えないもの（コードがパスに埋まっている等）だけ書く。
+// ------------------------------------------------------------------
+export const INVITE_RULES = [
+  // TikTok Lite は招待コードがパスに埋まる（lite.tiktok.com/t/XXXX）ためホストで判定。
+  // ※ 通常の tiktok.com/t/ は動画共有リンクでもあるので対象にしない。
+  { id: "tiktok-lite", label: "TikTok Lite 招待", hostRe: /(^|\.)lite\.tiktokv?\.com$/ }
+];
+
+// 招待コードを表すクエリパラメータ（小文字化して完全一致で比較）。
+// ※ "ref" 単体は「参照元」の意味で普通のサイトが使うため入れない（誤検出になる）。
+export const INVITE_PARAMS = [
+  "invite_code", "invitecode", "invite_id", "inviteid", "invite_from", "invitefrom",
+  "invitation_code", "invitationcode", "invitation_id", "inviter", "inviter_id",
+  "invited_by", "invitedby", "referral_code", "referralcode", "referral_id",
+  "referrer_code", "ref_code", "refcode", "recommend_code", "share_code", "sharecode"
+];
+
+// 招待用のパス。1セグメントまるごと一致のときだけ採る
+// （"/reference/" や "/2026/invitation-to-summit" を巻き込まないため）。
+export const INVITE_PATH_RE = /(^|\/)(invite|invites|invitation|invitations|referral|referrals|refer|invite-friend|invitefriends)(\/|$)/i;
 
 // ------------------------------------------------------------------
 // 4) まとめ/転載サイト（既知ドメインの中立ラベル。リモート/ユーザーで拡充する前提）
@@ -89,13 +124,67 @@ export const FARM_HOSTS = [
 ];
 
 // ------------------------------------------------------------------
-// 5) 要注意ドメイン（既知のフィッシング/詐欺"報告"があるもの。中立に「要注意」と表示）
-//    ※ 既定は空。公開ブロックリスト由来のドメインやユーザー追加で充填する。
-//    ※ "偽/詐欺" と断定せず、あくまで「報告あり＝注意」に留める（誤ラベルの実害・名誉毀損リスク回避）。
+// 5) ユーザーが自分で登録したドメイン
+//
+//    ここは「同梱データ」ではなく「利用者の設定」。他の全カテゴリと出自が違う。
+//
+//    当初は公開ブロックリスト由来の「第三者が報告した危険ドメイン」を想定していたが、
+//    やめた。理由:
+//      - フィッシングドメインの寿命は数日で、同梱スナップショットは審査を待つ間に古くなる。
+//        しかも死んだドメインは転売されて無関係のサイトになるため、古いリストは
+//        「効かない」だけでなく「無関係のサイトに警告を貼る」方向に劣化する。
+//      - 他の全カテゴリは「有料である」「アフィパラメータが付いている」のような
+//        リンク自体を見れば確かめられる事実の記述だが、これだけは他人のドメインに対する
+//        評価になる。外したときの実害の種類が違う。
+//    第三者由来のものを将来戻すなら、出典を添えた形（"URLhaus に登録あり"）にすること。
+//    それなら評価ではなく引用元のある事実になり、他のカテゴリと同じ土俵に乗る。
+//
+//    caution … ⚠️を出したいドメイン（自分で登録したので断定してよい）
+//    exclude … 誤検出されたので判定対象から完全に外したいドメイン
 // ------------------------------------------------------------------
-export const CAUTION_HOSTS = [
-  // 例) "example-scam.com"
-];
+export const USER_LIST_MAX = 200;   // storage.syncは1項目8KBまで。1件20B程度なので余裕を見た上限
+
+let userRules = { caution: [], exclude: [] };
+
+/**
+ * 入力を比較用のドメインに正規化する。ポップアップにはURLを丸ごと貼られる前提。
+ *   " https://WWW.Example.com/a?b=1 " -> "example.com"
+ * 判定不能なものは null（＝登録させない）。
+ */
+export function normalizeDomain(input) {
+  let s = String(input || "").trim().toLowerCase();
+  if (!s) return null;
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//, "");   // スキーム
+  s = s.split(/[/?#]/)[0];                        // パス以降
+  s = s.split("@").pop();                         // user:pass@
+  s = s.replace(/:\d+$/, "");                     // ポート
+  s = s.replace(/^www\./, "");                    // www.有無で別扱いにしない
+  // hostInList がサブドメインを含めて一致させるので、登録は登録可能ドメインの粒度でよい
+  return /^(?:[a-z0-9-]+\.)+[a-z]{2,}$/.test(s) ? s : null;
+}
+
+/** 配列を正規化・重複排除・上限まで切り詰める */
+export function normalizeDomainList(list) {
+  const out = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const d = normalizeDomain(raw);
+    if (d && !out.includes(d)) out.push(d);
+    if (out.length >= USER_LIST_MAX) break;
+  }
+  return out;
+}
+
+/** storage.sync から読んだ値を判定側へ差し込む。リモート取得を入れるときもこの口を使う。 */
+export function setUserRules({ caution, exclude } = {}) {
+  userRules = {
+    caution: normalizeDomainList(caution),
+    exclude: normalizeDomainList(exclude)
+  };
+  return userRules;
+}
+
+export function userCautionList() { return userRules.caution; }
+export function userExcludeList() { return userRules.exclude; }
 
 // ------------------------------------------------------------------
 // 6) アダルト（バズ投稿のリプ欄に湧く誘導リンク対策）
@@ -158,7 +247,7 @@ export const ADULT_TEXT_RE = [
 // 7) （旧「不審URL」カテゴリはここにあった）
 //    IP直リンク/怪しいTLD/なりすまし等のヒューリスティックで判定していたが、
 //    「事実として何が問題か」を利用者に伝えにくく、値するほどの精度も出なかったため削除した。
-//    なりすまし対策は 5) CAUTION_HOSTS（既知の報告があるドメイン）で扱う方針。
+//    なりすまし対策は 5) のユーザー登録リストで扱う（利用者が自分で足す）。
 // ------------------------------------------------------------------
 
 // 直接ダウンロードさせる拡張子（クリック＝ファイル取得になるもの）
@@ -321,20 +410,29 @@ export const SPAM_REPEAT_MIN = 3;   // リプ欄で同一ホストがこの件�
 export const CATEGORIES = [
   { kind: "paid",      label: "有料記事",       default: true,  needsFetch: true  },
   { kind: "affiliate", label: "アフィリンク",   default: true,  needsFetch: false },
+  { kind: "invite",    label: "招待/紹介リンク", default: true,  needsFetch: false },
   { kind: "shortener", label: "短縮URL",        default: true,  needsFetch: false },
   { kind: "pr",        label: "PR/広告リンク",  default: true,  needsFetch: false },
   { kind: "farm",      label: "まとめ/転載",    default: true,  needsFetch: false },
   { kind: "adult",     label: "アダルト",       default: true,  needsFetch: false },
   { kind: "spam",      label: "連投リンク",     default: true,  needsFetch: false },
   { kind: "download",  label: "ファイル直DL",   default: true,  needsFetch: false },
-  { kind: "caution",   label: "要注意ドメイン", default: true,  needsFetch: false },
+  { kind: "caution",   label: "自分で登録したドメイン", default: true, needsFetch: false },
   { kind: "ads",       label: "広告過多",       default: true,  needsFetch: true  },
   { kind: "login",     label: "登録/ログイン必須", default: true, needsFetch: true }
 ];
 
 export const DEFAULT_SETTINGS = {
   ...Object.fromEntries(CATEGORIES.map(c => ["cat_" + c.kind, c.default])),
-  badgeStyle: "cover",   // バッジの見せ方 cover(画像を赤で覆う) | pill(画像の上に小さく重ねる)
+  // かつて badgeStyle: "cover" | "pill" という設定があったが廃止した。
+  // "pill"(覆わない)は「開く前に必ず気付いてほしい」という設計原則そのものを無効にする一方、
+  // 「覆われるのが邪魔」への対処はカテゴリ個別のON/OFF(11個)で足りる。
+  // ※ 画像が無いポストでは覆えないので、その場合は今も自動的にピル表示になる。
   deepScan: true,        // リンク先を背景取得して有料/広告過多/登録必須/短縮の先を判定
-  maxBadges: 4           // 1ポストに出すバッジの最大数（覆い＋小バッジで4つまでは読める）
+  maxBadges: 4,          // 1ポストに出すバッジの最大数（覆い＋小バッジで4つまでは読める）
+  userCaution: [],       // 自分で⚠️を出したいドメイン
+  userExclude: []        // 誤検出されたので判定対象から外したいドメイン
 };
+
+/** ユーザーリストの設定キー。変更されたら判定キャッシュを作り直す必要がある。 */
+export const USER_RULE_KEYS = ["userCaution", "userExclude"];

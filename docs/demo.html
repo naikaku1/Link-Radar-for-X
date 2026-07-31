@@ -17,6 +17,15 @@
     --blue: #1d9bf0;
     --hover: #1e2732;
   }
+  .disclaimer {
+    margin: 10px 12px 14px;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--sub);
+  }
   body.light {
     --bg: #ffffff;
     --text: #0f1419;
@@ -103,17 +112,25 @@
 
 <div class="col">
   <div class="colhead">ホーム</div>
+  <div class="disclaimer">
+    バッジの見え方を確認するためのデモページです。表示されているアカウント名・ハンドル・
+    ドメイン・投稿内容は<b>すべて架空</b>で、実在のアカウントやサイトとは関係ありません。
+    判定は行わず、あらかじめ用意した結果を描画しているだけです。
+  </div>
   <div id="feed"></div>
 </div>
 
 <script>
 // ==================================================================
 // デモ用の投稿データ。ここを編集すれば見せたい画を作れる。
-// ドメインは実在サイトを名指ししないよう架空のものにしてある。
+// ドメインは実在サイトを名指ししないよう予約TLDの .example にしてある。
+// ハンドルも同じ理由で @example_* に統一すること。デモではアダルト誘導/連投スパムを
+// 演じさせるので、実在アカウントと衝突するハンドルを書くと、その人に対する評価を
+// 公開することになる。
 // ==================================================================
 const POSTS = [
   {
-    av: ["#f4a261", "#e76f51"], name: "みなと", handle: "@minato_dev", time: "2時間",
+    av: ["#f4a261", "#e76f51"], name: "みなと", handle: "@example_dev", time: "2時間",
     text: "拡張機能つくった。Xのリンク、開く前に正体が分かるようにした",
     card: { href: "https://t.co/DEMO1", host: "link-radar.example", title: "Link Radar for X",
             desc: "Xのリンクを開く前に、アダルト誘導・連投スパム・有料記事・広告過多を判定するChrome拡張",
@@ -121,14 +138,14 @@ const POSTS = [
     stats: ["12", "48", "310"]
   },
   {
-    av: ["#adb5bd", "#6c757d"], name: "ゆき", handle: "@yuki_00871", time: "5分",
+    av: ["#adb5bd", "#6c757d"], name: "ゆき", handle: "@example_user_a", time: "5分",
     text: "この動画やばすぎでしょ🥺 みんな見て",
     card: { href: "https://t.co/DEMO2", host: "movie-free24.example", title: "無料動画はこちら",
             desc: "今すぐ視聴できます", grad: ["#f72585", "#b5179e"] },
     stats: ["1", "0", "3"]
   },
   {
-    av: ["#2a9d8f", "#264653"], name: "経済ニュース", handle: "@econ_news_jp", time: "1時間",
+    av: ["#2a9d8f", "#264653"], name: "経済ニュース", handle: "@example_news", time: "1時間",
     text: "【速報】日銀、追加利上げを検討へ　市場の見方は分かれる",
     card: { href: "https://t.co/DEMO3", host: "keizai-times.example", title: "日銀、追加利上げを検討へ",
             desc: "関係者への取材で分かった。市場では年内の実施を織り込む動きも出ている",
@@ -136,7 +153,7 @@ const POSTS = [
     stats: ["34", "120", "890"]
   },
   {
-    av: ["#e9c46a", "#f4a261"], name: "まとめ速報", handle: "@matome_sokuho24", time: "3時間",
+    av: ["#e9c46a", "#f4a261"], name: "まとめ速報", handle: "@example_matome", time: "3時間",
     text: "話題になってたやつまとめました",
     card: { href: "https://t.co/DEMO4", host: "matome-news24.example", title: "【衝撃】あの話題の真相がこちら",
             desc: "ネットの反応をまとめました", grad: ["#8d99ae", "#2b2d42"] },
@@ -144,17 +161,17 @@ const POSTS = [
   },
   {
     // 短縮URL × 連投 × アフィリエイト × R18 が同時に出るケース（リプ欄スパムの典型）
-    av: ["#ced4da", "#868e96"], name: "あかり", handle: "@akari_2508713", time: "1分",
-    replyTo: "@buzz_post", text: "これマジで良かった😍 みんなも見て",
+    av: ["#ced4da", "#868e96"], name: "あかり", handle: "@example_user_b", time: "1分",
+    replyTo: "@example_buzz", text: "これマジで良かった😍 みんなも見て",
     card: { href: "https://t.co/DEMO6", host: "is.gd", title: "詳細はこちら",
             desc: "", grad: ["#c1121f", "#780000"] },
     stats: ["0", "0", "0"]
   },
   {
-    av: ["#a8dadc", "#457b9d"], name: "たけし", handle: "@takeshi_camp", time: "6時間",
+    av: ["#a8dadc", "#457b9d"], name: "たけし", handle: "@example_user_c", time: "6時間",
     text: "これはひどい……",
     quote: {
-      av: ["#adb5bd", "#495057"], name: "アカウント", handle: "@spam_acct_0917", time: "8時間",
+      av: ["#adb5bd", "#495057"], name: "アカウント", handle: "@example_spam", time: "8時間",
       text: "見てね💕",
       card: { href: "https://t.co/DEMO5", host: "bit.ly", title: "動画はこちら",
               desc: "", grad: ["#ff006e", "#8338ec"] }
