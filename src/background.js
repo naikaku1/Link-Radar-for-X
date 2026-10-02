@@ -6,12 +6,14 @@
 //   finalUrl: 解決できた最終URL（t.co/短縮の行き先開示用）
 import {
   classifyByUrl, extractRelayTarget, parseUrl, isSafeHost, registrableDomain,
-  urlFromDisplayText, hostFromDisplayText, isUserExcluded
+  urlFromDisplayText, hostFromDisplayText, isUserExcluded,
+  matchBioLinkService, extractBioLinks, isLinkMistyPage, extractLinkMistyClickTarget
 } from "./classifier.js";
 import { detectPaywallFromHtml } from "./paywall.js";
 import { analyzeHtml } from "./pagesignals.js";
 import {
-  matchPaywallSite, DEFAULT_SETTINGS, SHORTENER_HOSTS, setUserRules, USER_RULE_KEYS
+  matchPaywallSite, DEFAULT_SETTINGS, SHORTENER_HOSTS, setUserRules, USER_RULE_KEYS,
+  BIOLINK_MAX_BYTES, BAIT_MAX_LINKS
 } from "./rules.js";
 
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -77,8 +79,10 @@ async function loadSettings() {
     hasAllUrls = await chrome.permissions.contains({ origins: ["<all_urls>"] });
   } catch { hasAllUrls = false; }
 }
-loadSettings();
-invalidateCacheOnUpdate().then(pruneCache);
+// MV3は最初のメッセージで起動する。設定・権限・キャッシュ更新が終わる前に
+// 判定すると、取得OFF相当の空結果を最大6時間保存してしまう。
+let stateReady = Promise.all([loadSettings(), invalidateCacheOnUpdate()]);
+stateReady.then(pruneCache);
 if (chrome.runtime.onInstalled) {
   // 更新直後は必ず作り直す（reason: "update" / "install" どちらも）
   chrome.runtime.onInstalled.addListener(() => { chrome.storage.local.clear().catch(() => {}); memCache.clear(); });
@@ -90,17 +94,18 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (USER_RULE_KEYS.some(k => k in changes)) {
     // ルール自体が変わった → storage.local に残った古い判定も捨てないと最大6時間反映されない
     setUserRules({ caution: settings.userCaution, exclude: settings.userExclude });
-    clearResultCache();
-  } else {
-    memCache.clear();   // カテゴリのON/OFF等。再判定は走るのでmemCacheだけでよい
   }
+  // カテゴリ/取得ON-OFFでも、ディスクに残った前の設定の結果を無効化する。
+  stateReady = stateReady.then(clearResultCache);
 });
-if (chrome.permissions.onAdded) {
-  chrome.permissions.onAdded.addListener(() => { loadSettings(); memCache.clear(); });
+function refreshPermissionState() {
+  stateReady = stateReady.then(async () => {
+    await loadSettings();
+    await clearResultCache();
+  });
 }
-if (chrome.permissions.onRemoved) {
-  chrome.permissions.onRemoved.addListener(() => { loadSettings(); memCache.clear(); });
-}
+if (chrome.permissions.onAdded) chrome.permissions.onAdded.addListener(refreshPermissionState);
+if (chrome.permissions.onRemoved) chrome.permissions.onRemoved.addListener(refreshPermissionState);
 
 function catOn(kind) { return settings["cat_" + kind] !== false; }
 
@@ -159,7 +164,7 @@ async function pruneCache() {
     const drop = [];
     const alive = [];
     for (const [k, v] of Object.entries(all)) {
-      if (k === VERSION_KEY) continue;
+      if (k === VERSION_KEY || k.startsWith("__lr")) continue;   // 判定キャッシュ以外は触らない
       if (!v || typeof v.ts !== "number" || now - v.ts >= CACHE_TTL_MS) drop.push(k);
       else alive.push([k, v.ts]);
     }
@@ -180,13 +185,41 @@ async function fetchWithBody(url) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { signal: ctrl.signal, credentials: "omit", redirect: "follow" });
-    if (!res.ok) return null;
+    // credentials:"omit" … Cookieを送らない（ログイン状態と紐付けさせない）
+    // referrerPolicy:"no-referrer" … 取得元を明かさない。既定でも付かないことが多いが、
+    //   「どこ経由で来たか」を相手に渡さないことは明示しておく。
+    const res = await fetch(url, {
+      signal: ctrl.signal, credentials: "omit", redirect: "follow", referrerPolicy: "no-referrer"
+    });
     const ct = res.headers.get("content-type") || "";
-    if (ct && !/text\/html|application\/xhtml|text\/plain/i.test(ct)) return null;
+    if (!res.ok || (ct && !/text\/html|application\/xhtml|text\/plain/i.test(ct))) {
+      // 転送先がHTMLを返さなくても、最終URLはURL判定に使える。
+      return res.url && res.url !== url && isHttpUrl(res.url) ? { finalUrl: res.url, html: "", bodyUnavailable: true } : null;
+    }
     let html = await res.text();
     if (html.length > MAX_HTML_BYTES) html = html.slice(0, MAX_HTML_BYTES);
     return { finalUrl: res.url || url, html };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/**
+ * JSONを取る。fetchWithBody は content-type がHTML系でないと弾くので別口にした。
+ * link-in-bio の遷移先解決専用で、相手はサービスのCDN（ユーザーが踏む先のサーバーではない）。
+ */
+async function fetchJsonText(url) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      signal: ctrl.signal, credentials: "omit", redirect: "follow", referrerPolicy: "no-referrer"
+    });
+    if (!res.ok) return null;
+    const body = await res.text();
+    return body.length > BIOLINK_MAX_BYTES ? null : body;
   } catch {
     return null;
   } finally {
@@ -232,7 +265,7 @@ async function fetchFollowingRelays(url) {
     if (!got) return null;
 
     // 実体ページとみなせる大きさなら、そこで終わり
-    if (got.html.length > RELAY_MAX_BYTES) return got;
+    if (got.bodyUnavailable || got.html.length > RELAY_MAX_BYTES) return got;
 
     const next = extractRelayTarget(got.html);
     if (!next || !isHttpUrl(next) || next === got.finalUrl) return got;
@@ -290,6 +323,7 @@ function classifyQuick({ href, text }) {
 }
 
 async function classifyItem({ href, text }) {
+  await stateReady;
   const key = href || text;
   const cached = await getCached(key);
   if (cached) return cached;
@@ -321,8 +355,13 @@ async function classifyItem({ href, text }) {
     const displayHost = hostFromDisplayText(text);
 
     // 1) URLのみ分類。t.co自体はX標準ラッパなので短縮扱いしない。
-    if (hrefHost && hrefHost !== "t.co") addBadges(classifyByUrl(href));
-    if (displayUrl) addBadges(classifyByUrl(displayUrl));
+    //    ここでの結果は「取りに行かなくても済むか」の判断にも使うので、別に控えておく。
+    //    ※ badges/seen はカテゴリのON/OFFで欠けるが、こちらは設定に関係なく事実を持つ。
+    const urlOnly = {};
+    const noteUrlOnly = (o) => { for (const [k, v] of Object.entries(o)) if (v) urlOnly[k] = v; };
+
+    if (hrefHost && hrefHost !== "t.co") { const o = classifyByUrl(href); noteUrlOnly(o); addBadges(o); }
+    if (displayUrl) { const o = classifyByUrl(displayUrl); noteUrlOnly(o); addBadges(o); }
 
     // 2) 最終URL/最終ホストの解決
     //    ここは2つを厳密に区別する:
@@ -333,6 +372,7 @@ async function classifyItem({ href, text }) {
     let realUrl = null;
     let realHost = null;
     let resolved = false;
+    let resolutionFailed = false;
 
     if (hrefHost && hrefHost !== "t.co" && isHttpUrl(href)) {
       realUrl = href;
@@ -351,12 +391,15 @@ async function classifyItem({ href, text }) {
 
       if (needsResolve) {
         const stub = await schedule(() => fetchWithBody(href));
-        const target = stub ? extractRelayTarget(stub.html) : null;
+        // t.co が通常のHTTP転送を返す場合は最終URLを優先する。
+        // 転送先HTMLの先頭にある広告等のURLを中継先と誤読しないため。
+        const target = stub && stub.finalUrl !== href
+          ? stub.finalUrl : (stub ? extractRelayTarget(stub.html) : null);
         if (target && isHttpUrl(target)) {
           realUrl = target;
           realHost = safeHost(target) || realHost;
           resolved = true;
-        }
+        } else resolutionFailed = true;
       }
 
       // アンカーが無く表示テキストしか無い場合（引用元の素のテキストURL等）。
@@ -368,17 +411,86 @@ async function classifyItem({ href, text }) {
     }
 
     // 解決できた本URLで、URLのみの判定をやり直す（短縮の裏に隠れたアダルト/アフィ等を拾う）
-    if (resolved && realUrl) addBadges(classifyByUrl(realUrl));
+    if (resolved && realUrl) { const o = classifyByUrl(realUrl); noteUrlOnly(o); addBadges(o); }
 
     // 除外登録されたドメインは、ページを取得もしないし何も出さない。
     // classifyByUrl 側でも弾いているが、ページ内容の判定はここで止めないと通ってしまう。
     if (hostExcluded(realHost)) return emptyResult(realHost);
 
+    // 2.5) link-in-bio（プロフィールリンク集約）の中継ページ。
+    //      本体HTMLはガワだけで、リンクはJSが後から描くので取っても行き先が見えない。
+    //      サービスが公開しているJSONから遷移先を解決し、その遷移先を判定する。
+    //      ここが解決できると、行き先に隠れていた招待/アダルト等を既存ルールがそのまま拾える。
+    let bioLinks = null;
+    const bioSvc = (realUrl && deepScanEnabled()) ? matchBioLinkService(realUrl) : null;
+    if (bioSvc) {
+      const body = await schedule(() => fetchJsonText(bioSvc.jsonUrl));
+      if (body == null) resolutionFailed = true;
+      const links = body ? extractBioLinks(body, bioSvc.dropRe) : [];
+      if (links.length) {
+        bioLinks = links;
+        for (const l of links) addBadges(classifyByUrl(l.url));
+
+        // 行き先が1件の招待リンクなら、確認できた正体をカード上に大きく表示する。
+        // 短縮URLだけでは招待か分からないため、目立つ警告にはしない。
+        if (links.length <= BAIT_MAX_LINKS) {
+          const only = classifyByUrl(links[0].url);
+          if (only.invite) add("bait", only.invite);
+        }
+        // 行き先をポップアップで開示する（1件のときだけ。複数あると1つに決められない）
+        if (links.length === 1) { realUrl = links[0].url; realHost = safeHost(realUrl); resolved = true; }
+      }
+    }
+
+    // LinkMisty の /c/ ページは200のHTMLを返し、カードの onclick で
+    // 同一ページの ?lm_go=1 に進んでから招待先へ302転送する。
+    // ページ内に明示されたクリック先だけを追い、無関係な広告リンクは拾わない。
+    let mistyResolved = false;
+    let mistyFetchFailed = false;
+    if (realUrl && deepScanEnabled() && isLinkMistyPage(realUrl)
+      && (catOn("invite") || catOn("shortener") || catOn("bait"))) {
+      const page = await schedule(() => fetchWithBody(realUrl));
+      const clickUrl = page && extractLinkMistyClickTarget(page.html, page.finalUrl || realUrl);
+      if (page && page.finalUrl !== realUrl && !isLinkMistyPage(page.finalUrl)) {
+        const dest = classifyByUrl(page.finalUrl);
+        addBadges(dest);
+        if (dest.invite) add("bait", dest.invite);
+        realUrl = page.finalUrl;
+        realHost = safeHost(realUrl);
+        resolved = mistyResolved = true;
+      } else if (clickUrl) {
+        const landed = await schedule(() => fetchWithBody(clickUrl));
+        if (landed && landed.finalUrl !== clickUrl && isHttpUrl(landed.finalUrl)) {
+          const target = landed.finalUrl;
+          const dest = classifyByUrl(target);
+          addBadges(dest);
+          if (dest.invite) add("bait", dest.invite);
+          realUrl = target;
+          realHost = safeHost(target);
+          resolved = mistyResolved = true;
+        } else mistyFetchFailed = true;
+      } else if (!page) mistyFetchFailed = true;
+    }
+    if (hostExcluded(realHost)) return emptyResult(realHost);
+
     // 3) ページ内容の判定（有料 / 広告量 / 登録必須 / アダルト自己申告）
     let paywall = null;
     const site = realHost ? matchPaywallSite(realHost) : null;
+
+    // URLだけで結論が出ているものは取りに行かない。
+    //
+    // ページ取得は「利用者がクリックしていないのに、その先のサーバーに
+    // 利用者のIPが記録される」ことを意味する。判定に必要な範囲なら受け入れる代償だが、
+    // すでにURLだけで答えが出ているなら、その代償を払う理由がない。
+    //   adult    … 一番きつい。踏んでいないアダルトサイトのログに自分のIPが載る
+    //   caution  … 利用者自身が「警戒したい」と登録したドメイン。近づく必要がない
+    //   download … 実体がHTMLではないので取得しても判定に使えない
+    // 取得をやめることで 有料/広告過多/登録必須 は取りこぼすが、
+    // これらのドメインでその3つを知る価値は、IPを渡す代償に見合わない。
+    const settledByUrl = !!(urlOnly.adult || urlOnly.caution || urlOnly.download);
+
     const wantsFetch =
-      realUrl && realHost && realHost !== "t.co" && isHttpUrl(realUrl) &&
+      realUrl && realHost && realHost !== "t.co" && isHttpUrl(realUrl) && !settledByUrl && !bioLinks && !mistyResolved &&
       (site ? catOn("paid") : (deepScanEnabled() && (catOn("paid") || catOn("ads") || catOn("login"))));
 
     if (wantsFetch) {
@@ -396,14 +508,19 @@ async function classifyItem({ href, text }) {
           // 有料CTAやアダルトの文言を"引用しているだけ"のページを誤判定しないため。
           const trustText = landedUrl ? !isSafeHost(landedUrl) : true;
 
-          paywall = detectPaywallFromHtml(got.html, landedHost, {
-            generic: !matchPaywallSite(landedHost) && deepScanEnabled(),
-            trustText
-          });
-          const sig = analyzeHtml(got.html, { trustText });
-          // 有料が取れているときは「登録必須」は出さない（有料の方が強い情報）
-          if (paywall.status === "paid") delete sig.login;
-          addBadges(sig);
+          if (got.bodyUnavailable) {
+            // HTTPエラー等で本文が読めないとき、空HTMLを無料記事の証拠にしない。
+            // 最終URLから分かる分は下で判定し、内容判定だけ再試行する。
+            paywall = { status: "unknown", reason: "fetch-failed" };
+          } else {
+            paywall = detectPaywallFromHtml(got.html, landedHost, {
+              generic: !matchPaywallSite(landedHost) && deepScanEnabled(),
+              trustText
+            });
+            const sig = analyzeHtml(got.html, { trustText });
+            if (paywall.status === "paid") delete sig.login;
+            addBadges(sig);
+          }
           // 着地先URLで再判定（短縮URL・多段中継の裏に隠れたアダルト/アフィ等はここで出る）
           addBadges(classifyByUrl(got.finalUrl || realUrl));
           // 中継を辿った先が除外登録されていることがある（短縮URLの行き先など）
@@ -424,8 +541,11 @@ async function classifyItem({ href, text }) {
     const countableHost = (realHost && realHost !== "t.co") ? realHost : null;
     const safeParsed = countableHost ? parseUrl("https://" + countableHost) : null;
 
+    const transient = resolutionFailed || mistyFetchFailed || (paywall &&
+      (paywall.reason === "fetch-failed" || paywall.reason === "resolve-miss"));
     const result = {
       badges,
+      retryable: !!transient,
       paywall,
       finalUrl: resolved ? realUrl : undefined,
       host: countableHost || undefined,
@@ -433,9 +553,7 @@ async function classifyItem({ href, text }) {
       domain: countableHost ? registrableDomain(countableHost) : undefined,
       safe: safeParsed ? isSafeHost(safeParsed) : true   // 不明なら安全側（＝連投カウントしない）
     };
-    // 一時的な失敗(取得失敗)はキャッシュしない＝次回スクロールでリトライ。漏れの固定化を防ぐ。
-    const transient = paywall && paywall.status === "unknown" &&
-      (paywall.reason === "fetch-failed" || paywall.reason === "resolve-miss");
+    // 中継先を取得できなかった空の結果もキャッシュしない。content側で再試行する。
     if (!transient) await setCached(key, result);
     return result;
   })();
@@ -448,26 +566,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "classify" && msg.item) {
     const tabId = sender && sender.tab ? sender.tab.id : null;
 
-    // ポップアップの動作テストなど、タブ以外からの問い合わせは完全な結果を待って返す
-    if (tabId == null) {
-      classifyItem(msg.item).then(sendResponse).catch(e => sendResponse({ error: String(e), badges: [] }));
-      return true;
-    }
+    // 初期化を待つ間もChromeの応答チャネルを保持する。
+    const respond = async () => {
+      await stateReady;
+      // ポップアップ等には完全な結果を返す。
+      if (tabId == null) {
+        sendResponse(await classifyItem(msg.item));
+        return;
+      }
+      const key = msg.item.href || msg.item.text;
+      const hit = memCache.get(key);
+      const fresh = hit && Date.now() - hit.ts < CACHE_TTL_MS;
+      sendResponse(fresh ? hit.result : classifyQuick(msg.item));
+      if (fresh) return;
 
-    const key = msg.item.href || msg.item.text;
-    const hit = memCache.get(key);
-    const fresh = hit && Date.now() - hit.ts < CACHE_TTL_MS;
-
-    // 1) まずURLだけの判定を即返す → バッジがすぐ出る
-    sendResponse(fresh ? hit.result : classifyQuick(msg.item));
-
-    // 2) 取得が要る判定は終わり次第、差分として送る
-    if (!fresh) {
-      classifyItem(msg.item)
-        .then(result => chrome.tabs.sendMessage(tabId, { type: "classifyUpdate", key, result }))
-        .catch(() => {});
-    }
-    return false;
+      // 結果の計算失敗も再試行できる結果として届ける。送信先タブが閉じたときは終了する。
+      let result;
+      try { result = await classifyItem(msg.item); }
+      catch { result = { ...classifyQuick(msg.item), partial: false, retryable: true }; }
+      try { await chrome.tabs.sendMessage(tabId, { type: "classifyUpdate", key, result }); } catch {}
+    };
+    respond().catch(() => sendResponse({ error: "classification-failed", badges: [], retryable: true }));
+    return true;
   }
   if (msg && msg.type === "classifyBatch" && Array.isArray(msg.items)) {
     Promise.all(msg.items.map(it =>

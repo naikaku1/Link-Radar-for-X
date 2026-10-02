@@ -1,6 +1,6 @@
 // test/test.js — 依存なしの簡易テストハーネス。`npm test` で実行。
 import { classifyByUrl, extractTcoTarget, extractRelayTarget, detectAdult, parseUrl,
-         urlFromDisplayText, registrableDomain } from "../src/classifier.js";
+         urlFromDisplayText, registrableDomain, extractLinkMistyClickTarget } from "../src/classifier.js";
 import { detectPaywallFromHtml } from "../src/paywall.js";
 import { detectAdLoad, countAdSlots, detectAdultFromHtml, detectLoginWall, analyzeHtml } from "../src/pagesignals.js";
 import { extractStructured, stripTags } from "../src/paywall.js";
@@ -45,6 +45,17 @@ ok("通常ニュースURLは無印",        Object.keys(classifyByUrl("https://w
 
 console.log("招待/紹介リンク");
 ok("TikTok Lite は invite",       classifyByUrl("https://lite.tiktok.com/t/ZSabcdefg/").invite);
+ok("LinkMisty のカードURLは短縮", classifyByUrl("https://linkmisty.com/c/fxfa1pu/").shortener);
+ok("LinkMisty トップページは短縮扱いしない", !classifyByUrl("https://linkmisty.com/").shortener);
+ok("TikTok 招待の転送後URLも invite", classifyByUrl("https://www.tiktok.com/ug/incentive/share/pro_scan_code?ug_launch_category=referral").invite);
+ok("通常の TikTok ページは invite にしない", !classifyByUrl("https://www.tiktok.com/@user/video/123").invite);
+ok("TikTok 同パスでも referral 以外は invite にしない", !classifyByUrl("https://www.tiktok.com/ug/incentive/share/pro_scan_code?ug_launch_category=other").invite);
+ok("LinkMisty のカードクリック先を抽出", extractLinkMistyClickTarget(
+  `<a href="/create/?utm_medium=referral">作成</a><div onclick="location.href='https://linkmisty.com/c/fxfa1pu/?lm_go=1'">カード</div>`,
+  "https://linkmisty.com/c/fxfa1pu/") === "https://linkmisty.com/c/fxfa1pu/?lm_go=1");
+ok("LinkMisty から外部 onclick は追わない", !extractLinkMistyClickTarget(
+  `<div onclick="location.href='https://example.com/?lm_go=1'">カード</div>`,
+  "https://linkmisty.com/c/fxfa1pu/"));
 ok("invite_code パラメータ",       classifyByUrl("https://example.com/dl?invite_code=ABC123").invite);
 ok("referral_code パラメータ",     classifyByUrl("https://example.com/?referralCode=XYZ").invite);
 ok("パスの /invite/ ",            classifyByUrl("https://app.example.com/invite/AB12").invite);

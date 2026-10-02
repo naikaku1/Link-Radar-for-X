@@ -31,9 +31,9 @@
 <p class="lead">
   content.js は MV3 の制約で ES モジュールにできず、Node から import できません。
   そのため実ブラウザでDOMを組み立てて検証します。<br>
-  <b>IntersectionObserver は使いません。</b>バックグラウンドタブでは発火しない
+  <b>交差通知はスタブで制御します。</b>バックグラウンドタブでは発火しない
   （<code>visibilityState: "hidden"</code> だと交差を報告しない）ため、
-  テストが環境依存で通らなくなるためです。かわりに <code>processTweet()</code> を直接呼びます。
+  テストが環境依存で通らなくなるためです。通常は <code>processTweet()</code> を直接呼び、<br>画面遷移のテストでは交差通知だけをスタブにして、実際のDOM監視から判定までを検証します。
 </p>
 
 <div id="summary">実行中…</div>
@@ -55,11 +55,38 @@ const RESULTS = {
   "https://t.co/SPAM2": { badges: [], domain: "spam-site.example", safe: false },
   "https://t.co/SPAM3": { badges: [], domain: "spam-site.example", safe: false },
   "https://t.co/QUOTED": { badges: [], domain: "quoted-site.example", safe: false },
+  "https://t.co/QUOTED_BAIT": { badges: [{ kind: "bait", label: "TikTok Lite 招待" }], domain: "tiktok.com", safe: true },
+  "https://t.co/BAIT": { badges: [
+    { kind: "shortener", label: "短縮URL" },
+    { kind: "invite", label: "TikTok Lite 招待" },
+    { kind: "bait", label: "TikTok Lite 招待" }
+  ], domain: "tiktok.com", safe: true },
   "https://t.co/NEWS":  { badges: [{ kind: "ads", label: "広告枠14個" }], domain: "news.example", safe: false },
   "https://t.co/CARD":  { badges: [{ kind: "ads", label: "広告枠14個" }], domain: "card.example", safe: false },
   "https://t.co/R18":   { badges: [{ kind: "adult", label: "アダルトサイト" }], domain: "r18.example", safe: false },
   "https://t.co/PAID":  { badges: [{ kind: "paid", label: "有料記事" }], domain: "paid.example", safe: false }
 };
+
+// 見えるポストだけ交差通知を発生させる。DOM監視自体は実物を使う。
+const visibleForTest = new Set();
+globalThis.IntersectionObserver = class {
+  constructor(cb) { this.cb = cb; this.nodes = new Set(); }
+  observe(t) {
+    this.nodes.add(t);
+    if (visibleForTest.has(t)) queueMicrotask(() => {
+      if (this.nodes.has(t)) this.cb([{ target: t, isIntersecting: true }]);
+    });
+  }
+  unobserve(t) { this.nodes.delete(t); }
+};
+const retryTimers = [];
+globalThis.setTimeout = (cb, ms) => { retryTimers.push({cb,ms}); return retryTimers.length; };
+const routeTimers = [];
+globalThis.setInterval = cb => { routeTimers.push(cb); return routeTimers.length; };
+const updateListeners = [];
+const REQUESTS = [];
+const REQUEST_ITEMS = [];
+const sendUpdate = (key, result) => updateListeners.forEach(cb => cb({type: "classifyUpdate", key, result}));
 
 // chrome API スタブ。
 // sendMessage は **必ず非同期** で返すこと。全ポストの問い合わせが先に発行されて
@@ -70,12 +97,14 @@ globalThis.chrome = {
     lastError: null,
     sendMessage(msg, cb) {
       const key = msg.item.href || msg.item.text;
+      REQUESTS.push(key);
+      REQUEST_ITEMS.push(msg.item);
       // setTimeout ではなく microtask。バックグラウンドタブでは setTimeout が
       // 1秒程度まで throttle され、テストが極端に遅くなるため。
       // 「全ポストの登録が先に終わり、応答は後から来る」という順序はどちらでも再現できる。
       queueMicrotask(() => cb(RESULTS[key] || { badges: [] }));
     },
-    onMessage: { addListener() {} }
+    onMessage: { addListener(cb) { updateListeners.push(cb); } }
   },
   storage: {
     sync: { get(defaults, cb) { cb({ ...defaults }); } }
@@ -142,7 +171,7 @@ function el(tag, attrs = {}, ...kids) {
 const userName = (n) => el("div", { "data-testid": "User-Name" }, n);
 const link = (href, text) => el("a", { href }, text || href);
 
-/** 1ポストぶんのDOMを作る。opts で カード/添付画像/引用元 を足す */
+/** 1ポストぶんのDOMを作る。opts でカード/添付画像/引用元を足す */
 function makeTweet({ text = "", href, card, photo, quote }) {
   const t = el("article", { "data-testid": "tweet", role: "article" });
   t.append(userName("作者"));
@@ -171,6 +200,10 @@ function makeTweet({ text = "", href, card, photo, quote }) {
 
 /** シナリオごとに舞台と content.js の内部状態をまっさらにする */
 function reset() {
+  visibleForTest.clear();
+  REQUESTS.length = 0;
+  REQUEST_ITEMS.length = 0;
+  retryTimers.length = 0;
   stage.replaceChildren();
   pending.clear();
   domainRecords.clear();
@@ -229,6 +262,13 @@ async function run() {
   ok("本体にも貼られている場合はカウントする",
      (domainRecords.get("quoted-site.example") || []).length === 3);
 
+  reset();
+  const quotedInvite = makeTweet({ quote: { href: "https://t.co/QUOTED_BAIT" } });
+  processTweet(quotedInvite);
+  await tick(4);
+  ok("引用元のリンクも判定して正体を表示する",
+     !!quotedInvite.querySelector('div[role="link"] .lr-pill.lr-bait')?.textContent.includes("TikTok Lite 招待"));
+
   // ================================================================
   group("描画先: リンクカード vs 投稿者の添付画像");
   reset();
@@ -250,6 +290,13 @@ async function run() {
      overlayOn(c1.querySelector('[data-testid="card.wrapper"]')) === 1,
      "カード自体がリンクなので、ここに出すのは常に正しい");
   ok("リンクカードがあるときはリンク脇に出さない", inlineIn(c1) === 0);
+
+  reset();
+  const baitCard = makeTweet({ card: "https://t.co/BAIT" });
+  processTweet(baitCard);
+  await tick(4);
+  ok("確認済みの招待先をリンクカード上で大きく表示する",
+     !!baitCard.querySelector('.lr-cover.lr-bait .lr-cover-txt')?.textContent.includes("TikTok Lite 招待"));
 
   // ================================================================
   group("釣り画像（BAIT_COVER_KINDS だけ添付画像を覆う）");
@@ -282,6 +329,129 @@ async function run() {
   io.observe = realObserve;
   ok("article ノード自身を渡しても拾う", observed === 1,
      "Xはセルごと足すこともarticleだけ差し替えることもある。後者を取りこぼすと永久に判定されない");
+
+  // ================================================================
+  group("リプ欄の遷移・遅れて追加されるリンクとカード");
+  reset();
+  const hydrated = makeTweet({ text: "読み込み中" });
+  visibleForTest.add(hydrated);
+  scan(hydrated);
+  await tick();
+  hydrated.querySelector(".txt").append(link("https://t.co/NEWS"));
+  await tick();
+  ok("見えているポストに後から入ったリンクを自動判定する", inlineIn(hydrated) === 1);
+
+  reset();
+  const extra = makeTweet({ href: "https://t.co/NEWS" });
+  visibleForTest.add(extra);
+  scan(extra);
+  await tick();
+  extra.querySelector(".txt").append(el("div", {}, link("https://t.co/PAID")));
+  await tick();
+  ok("判定済みポストに追加された別リンクも判定する", kindsOn(extra).some(s => s.includes("有料")));
+  ok("既存リンクは再問い合わせしない", REQUESTS.filter(k => k === "https://t.co/NEWS").length === 1);
+
+  reset();
+  const delayedCard = makeTweet({ href: "https://t.co/BAIT" });
+  visibleForTest.add(delayedCard);
+  scan(delayedCard);
+  await tick();
+  delayedCard.append(el("div", {"data-testid":"card.wrapper"}, el("div", {"data-testid":"card.layoutLarge.media"})));
+  await tick();
+  ok("詳細判定後に追加されたカードにも正体を表示する", !!delayedCard.querySelector(".lr-cover.lr-bait"));
+  ok("カード追加時にリンク脇の旧バッジを残さない", inlineIn(delayedCard) === 0);
+  ok("カード追加だけでは再問い合わせしない", REQUESTS.length === 1);
+
+  reset();
+  const reused = makeTweet({ href: "https://t.co/NEWS", card: true });
+  visibleForTest.add(reused);
+  scan(reused);
+  await tick();
+  reused.querySelector("a").href = "https://t.co/PAID";
+  await tick();
+  ok("既存ポストのhref差し替えも判定する", kindsOn(reused).some(s => s.includes("有料")));
+  ok("差し替え前の判定を消す", !kindsOn(reused).some(s => s.includes("広告多")));
+
+  reset();
+  RESULTS["https://t.co/DEFERRED"] = { badges:[{kind:"shortener"}], partial:true };
+  history.pushState({}, "", "/other/status/456");
+  const moved = makeTweet({ href: "https://t.co/DEFERRED", card: true });
+  visibleForTest.add(moved);
+  scan(moved);
+  await tick();
+  routeTimers.forEach(cb => cb());  // URL検知が簡易判定の後に来る実際の競合順序
+  sendUpdate("https://t.co/DEFERRED", RESULTS["https://t.co/BAIT"]);
+  await tick();
+  ok("画面遷移の直後も詳細判定を取りこぼさない", !!moved.querySelector(".lr-cover.lr-bait"));
+
+  reset();
+  const lateQuote = makeTweet({ href:"https://t.co/NEWS" });
+  visibleForTest.add(lateQuote);
+  scan(lateQuote);
+  await tick();
+  lateQuote.append(el("div", {role:"link"}, userName("引用元"), link("https://t.co/QUOTED_BAIT")));
+  await tick();
+  ok("後から追加された引用元も判定する", !!lateQuote.querySelector('div[role="link"] .lr-bait'));
+  const stableRequests = REQUESTS.length;
+  lateQuote.querySelector(".lr-bait")?.append(document.createTextNode(""));
+  await tick();
+  ok("自分のバッジ描画で判定を繰り返さない", REQUESTS.length === stableRequests);
+
+  reset();
+  RESULTS["https://t.co/EMPTY_FINAL"] = {badges:[{kind:"shortener"}], partial:true};
+  const cleanFinal = makeTweet({href:"https://t.co/EMPTY_FINAL", card:true});
+  processTweet(cleanFinal);
+  await tick();
+  sendUpdate("https://t.co/EMPTY_FINAL", {badges:[], safe:true});
+  await tick();
+  ok("最終判定が無印なら簡易判定のバッジを消す", !cleanFinal.querySelector(".lr-overlay,.lr-cover,.lr-inline"));
+
+  reset();
+  const splitCard = makeTweet({ card: "https://t.co/SPLIT" });
+  splitCard.querySelector("a").textContent = "スマホの行方知ったら天才だった";
+  splitCard.append(link("https://t.co/SPLIT", "linkmisty.comから"));
+  processTweet(splitCard);
+  await tick();
+  ok("カードの見出しと別リンクの表示ドメインを併せて判定する", REQUEST_ITEMS[0]?.text === "linkmisty.com");
+  ok("同じカードURLの問い合わせは1回だけ", REQUESTS.length === 1);
+
+  reset();
+  RESULTS["https://t.co/REINSERT"] = {badges:[{kind:"shortener"}],partial:true};
+  const reinserted = makeTweet({href:"https://t.co/REINSERT",card:true});
+  visibleForTest.add(reinserted);
+  scan(reinserted);
+  await tick();
+  reinserted.remove();
+  await tick();
+  stage.append(reinserted);
+  await tick();
+  sendUpdate("https://t.co/REINSERT", RESULTS["https://t.co/BAIT"]);
+  await tick();
+  ok("応答待ちのポストを外して再挿入しても詳細判定が届く", !!reinserted.querySelector(".lr-cover.lr-bait"));
+
+  reset();
+  RESULTS["https://t.co/RETRY"] = {badges:[{kind:"shortener"}],retryable:true};
+  const recovery = makeTweet({href:"https://t.co/RETRY",card:true});
+  processTweet(recovery);
+  await tick();
+  ok("取得失敗でもURLから分かるバッジは表示する", !!recovery.querySelector(".lr-shortener"));
+  ok("一時失敗なら1秒後の再試行を予約する", retryTimers.length === 1 && retryTimers[0].ms === 1000);
+  RESULTS["https://t.co/RETRY"] = RESULTS["https://t.co/BAIT"];
+  retryTimers.shift()?.cb();
+  await tick();
+  ok("再試行で回復した詳細判定を表示する", !!recovery.querySelector(".lr-cover.lr-bait"));
+  ok("回復したら再試行を繰り返さない", REQUESTS.length === 2 && retryTimers.length === 0);
+
+  reset();
+  RESULTS["https://t.co/ALWAYS_FAIL"] = {badges:[],retryable:true};
+  const offline = makeTweet({href:"https://t.co/ALWAYS_FAIL"});
+  processTweet(offline);
+  await tick();
+  retryTimers.shift()?.cb();
+  await tick();
+  retryTimers.shift()?.cb();
+  await tick();
+  ok("通信失敗が続いても再試行は最大2回で止める", REQUESTS.length === 3 && retryTimers.length === 0);
 
   // ================================================================
   const sum = document.getElementById("summary");

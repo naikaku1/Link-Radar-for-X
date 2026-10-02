@@ -38,6 +38,10 @@ const PAGES = {
   "https://t.co/ADULT": tco("https://brand-new-domain.example/lp/1"),
   "https://t.co/ASAHI": tco("https://www.asahi.com/articles/ASV1.html"),
   "https://t.co/SHORT": tco("https://bit.ly/xyz123"),
+  "https://t.co/MISTY": {
+    html: '<html><body>' + 'x'.repeat(4500) + '<img src="https://ads.example/banner.png"></body></html>',
+    finalUrl: "https://linkmisty.com/c/fxfa1pu/"
+  },
   "https://gigazine.net/news/20260101-real-article/":
     '<html>' + Array.from({ length: 12 }, (_, i) => `<div id="div-gpt-ad-slot${i}"></div>`).join("") + '</html>',
   "https://brand-new-domain.example/lp/1":
@@ -45,7 +49,21 @@ const PAGES = {
   "https://www.asahi.com/articles/ASV1.html":
     '<html><p>有料会員になると続きをお読みいただけます</p></html>',
   // 短縮URL。fetchはリダイレクトを追って最終URLを返す（finalUrl が別ドメイン）
-  "https://bit.ly/xyz123": { html: '<html><body>動画</body></html>', finalUrl: "https://missav.com/ja/abc-123" }
+  "https://bit.ly/xyz123": { html: '<html><body>動画</body></html>', finalUrl: "https://missav.com/ja/abc-123" },
+  "https://linkmisty.com/c/fxfa1pu/": '<html><body>' + 'x'.repeat(4500) +
+    '<a href="/create/?utm_medium=referral">作成</a><div onclick="location.href=\'https://linkmisty.com/c/fxfa1pu/?lm_go=1\'">カード</div></body></html>',
+  "https://linkmisty.com/c/fxfa1pu/?lm_go=1": {
+    html: "", ok: false,
+    finalUrl: "https://www.tiktok.com/ug/incentive/share/pro_scan_code?ug_launch_category=referral"
+  },
+  "https://linkmisty.com/c/normal/": '<div onclick="location.href=\'https://linkmisty.com/c/normal/?lm_go=1\'">カード</div>',
+  "https://linkmisty.com/c/normal/?lm_go=1": { html: "", finalUrl: "https://example.com/" },
+  "https://bio.linkcdn.cc/upload/lnkcmpts/onlyapp1.json": JSON.stringify({
+    cmpts: JSON.stringify([{ link: "https://lite.tiktok.com/t/ZSabcdefg/" }])
+  }),
+  "https://bio.linkcdn.cc/upload/lnkcmpts/onlyshort.json": JSON.stringify({
+    cmpts: JSON.stringify([{ link: "https://bit.ly/xyz123" }])
+  })
 };
 function tco(target) {
   return `<head><noscript><META http-equiv="refresh" content="0;URL=${target}"></noscript></head>` +
@@ -56,7 +74,7 @@ globalThis.fetch = async (url) => {
   if (page == null) throw new Error("not stubbed: " + url);
   const html = typeof page === "string" ? page : page.html;
   const finalUrl = typeof page === "string" ? url : page.finalUrl;   // リダイレクト後のURL
-  return { ok: true, url: finalUrl, headers: { get: () => "text/html" }, text: async () => html };
+  return { ok: page.ok !== false, url: finalUrl, headers: { get: () => "text/html" }, text: async () => html };
 };
 
 await import("../src/background.js");
@@ -105,6 +123,9 @@ ok("有料記事を検出",             kinds(r).includes("paid"));
 ok("paywall.status が paid",     r.paywall.status === "paid");
 
 console.log("deepScan OFF では登録媒体以外を取得しない");
+r = await classify({ href: "https://linkmisty.com/c/fxfa1pu/", text: "linkmisty.com/c/fxfa1pu/" });
+ok("LinkMisty は取得OFFでも短縮だけ表示", kinds(r).includes("shortener") && !kinds(r).includes("invite"));
+ok("取得OFFでは中継先の強調をしない", !kinds(r).includes("bait"));
 r = await classify({ href: "https://t.co/GIGA", text: "gigazine.net/news/2026010…" });
 ok("未登録ドメインはfetchしない", r.finalUrl === undefined);
 ok("広告過多は出ない",           !kinds(r).includes("ads"));
@@ -116,6 +137,21 @@ deepScanOn = true;
 messageListeners.length = 0;
 await import("../src/background.js?deepScan=1");
 await new Promise(res => setTimeout(res, 10));
+r = await classify({ href: "https://linkmisty.com/c/fxfa1pu/", text: "linkmisty.com/c/fxfa1pu/" });
+ok("LinkMisty のクリック転送先から招待を検出", kinds(r).includes("invite"));
+ok("LinkMisty の確認済み招待先を強調", r.badges.find(b => b.kind === "bait")?.label === "TikTok Lite 招待");
+ok("LinkMisty の最終ホストを返す", r.host === "www.tiktok.com" && r.finalUrl.includes("ug_launch_category=referral"));
+r = await classify({ href: "https://t.co/MISTY", text: "linkmisty.com/c/fxfa1pu/" });
+ok("Xの t.co 経由でも招待先を強調", kinds(r).includes("invite") && kinds(r).includes("bait"));
+r = await classify({ href: "https://linkmisty.com/c/normal/", text: "linkmisty.com/c/normal/" });
+ok("普通の転送先を招待誘導扱いしない", !kinds(r).includes("bait"));
+r = await classify({ href: "https://linkbio.co/onlyapp1/", text: "linkbio.co/onlyapp1/" });
+ok("単一招待先のプロフィールカードを強調", r.badges.find(b => b.kind === "bait")?.label === "TikTok Lite 招待");
+ok("プロフィールのhostも確認した行き先へ更新する", r.host === "lite.tiktok.com");
+ok("プロフィールのdomainも実際の行き先で数える", r.domain === "tiktok.com");
+ok("通常のTikTok招待をLinkBioの連投として数えない", r.safe === true);
+r = await classify({ href: "https://linkbio.co/onlyshort/", text: "linkbio.co/onlyshort/" });
+ok("単一短縮URLだけでは招待誘導と断定しない", !kinds(r).includes("bait"));
 r = await classify({ href: "https://t.co/GIGA", text: "gigazine.net/news/2026010…" });
 ok("未登録ドメインを取得して広告枠を数える", kinds(r).includes("ads"));
 ok("広告枠数がラベルに出る",
@@ -130,6 +166,69 @@ ok("短縮URLとして検出する",                 kinds(r).includes("shortene
 ok("短縮の先を解決してアダルトを検出する",   kinds(r).includes("adult"));
 ok("最終ホストを着地先に更新する",           r.host === "missav.com");
 ok("連投カウントも着地先ドメインで数える",   r.domain === "missav.com");
+
+console.log("URLだけで結論が出るものは取得しない（IPを渡さないため）");
+// ページ取得は「クリックしていないのに相手のサーバーに自分のIPが載る」ことを意味する。
+// すでにURLだけで答えが出ているなら、その代償を払う理由がない。
+{
+  let fetches = 0;
+  const raw = globalThis.fetch;
+  globalThis.fetch = async (u) => { fetches++; return raw(u); };
+
+  r = await classify({ href: "https://jp.pornhub.com/view?v=1", text: "jp.pornhub.com/view" });
+  ok("既知アダルトドメインは adult が出る", kinds(r).includes("adult"));
+  ok("既知アダルトドメインは取得しない",     fetches === 0);
+
+  fetches = 0;
+  r = await classify({ href: "https://cdn.example.info/app.apk", text: "cdn.example.info/app.apk" });
+  ok("直ダウンロードは download が出る", kinds(r).includes("download"));
+  ok("直ダウンロードは取得しない",       fetches === 0);
+
+  // 一方、URLに手掛かりが無いものは今までどおり取得して判定する（縮退させない）
+  // ※ 同じURLを前のテストで判定済みなのでキャッシュを捨ててから測る
+  await new Promise(res => { for (const fn of messageListeners) fn({ type: "clearCache" }, {}, res); });
+  fetches = 0;
+  r = await classify({ href: "https://t.co/ADULT", text: "brand-new-domain.example/lp/1" });
+  ok("URLに手掛かりが無ければ従来どおり取得する", fetches > 0 && kinds(r).includes("adult"));
+
+  globalThis.fetch = raw;
+}
+
+console.log("転送先の一時的な取得失敗からの回復");
+r = await classify({href:"https://t.co/RECOVER", text:"カードの見出し"});
+ok("t.co解決失敗は再試行可能として返す", r.retryable === true);
+PAGES["https://t.co/RECOVER"] = tco("https://linkmisty.com/c/fxfa1pu/");
+r = await classify({href:"https://t.co/RECOVER", text:"カードの見出し"});
+ok("失敗した空の判定をキャッシュせず次回は招待を検出する", kinds(r).includes("bait"));
+ok("回復後は再試行不要になる", r.retryable === false);
+
+PAGES["https://linkmisty.com/c/flaky/"] = '<div onclick="location.href=\'https://linkmisty.com/c/flaky/?lm_go=1\'">カード</div>';
+r = await classify({href:"https://linkmisty.com/c/flaky/", text:"linkmisty.com"});
+ok("LinkMistyのクリック転送取得失敗も再試行可能", r.retryable === true);
+PAGES["https://linkmisty.com/c/flaky/?lm_go=1"] = {
+  html:"", ok:false,
+  finalUrl:"https://www.tiktok.com/ug/incentive/share/pro_scan_code?ug_launch_category=referral"
+};
+r = await classify({href:"https://linkmisty.com/c/flaky/", text:"linkmisty.com"});
+ok("LinkMistyも失敗を固定せず次回は正体を検出する", kinds(r).includes("bait") && r.retryable === false);
+
+console.log("転送先URLと本文取得の成否を区別する");
+PAGES["https://bit.ly/blockednews"] = {html:"",ok:false,finalUrl:"https://www.asahi.com/articles/ASV1.html"};
+r = await classify({href:"https://bit.ly/blockednews",text:"bit.ly/blockednews"});
+ok("HTTP403の空本文を無料記事と確定しない", r.paywall.status === "unknown" && r.paywall.confirmed !== true);
+ok("本文取得失敗でも最終URLを保持する", r.host === "www.asahi.com" && r.finalUrl.includes("/articles/"));
+ok("本文が読めなかった結果は再試行可能", r.retryable === true);
+PAGES["https://bit.ly/blockednews"] = {html:"<p>有料会員になると続きをお読みいただけます</p>",finalUrl:"https://www.asahi.com/articles/ASV1.html"};
+r = await classify({href:"https://bit.ly/blockednews",text:"bit.ly/blockednews"});
+ok("HTTP403の結果を固定せず次回は有料判定できる", kinds(r).includes("paid") && r.retryable === false);
+
+console.log("リンク集CDNの一時的な失敗からの回復");
+PAGES["https://linkbio.co/flakyapi/"] = "<html><body>読み込み用のページ</body></html>";
+r = await classify({href:"https://linkbio.co/flakyapi/",text:"linkbio.co/flakyapi/"});
+ok("LinkBio公開JSON取得失敗は再試行可能", r.retryable === true);
+PAGES["https://bio.linkcdn.cc/upload/lnkcmpts/flakyapi.json"] = JSON.stringify({cmpts:JSON.stringify([{link:"https://lite.tiktok.com/t/recovered/"}])});
+r = await classify({href:"https://linkbio.co/flakyapi/",text:"linkbio.co/flakyapi/"});
+ok("LinkBioの失敗をキャッシュせず次回は正体を表示する", kinds(r).includes("bait") && r.retryable === false);
 
 console.log("ユーザー登録ドメイン（自分で登録 / 除外）");
 // rules.js はシングルトンなので、テストから差し込めば background 側にもそのまま効く

@@ -5,6 +5,7 @@ import {
   AFFILIATE_RULES, SHORTENER_HOSTS, PR_RULES, FARM_HOSTS,
   SAFE_HOSTS, ADULT_HOSTS, ADULT_URL_RE, DOWNLOAD_EXT_RE,
   INVITE_RULES, INVITE_PARAMS, INVITE_PATH_RE,
+  BIOLINK_SERVICES, BIOLINK_MAX_BYTES, BIOLINK_MAX_LINKS,
   userCautionList, userExcludeList
 } from "./rules.js";
 
@@ -95,6 +96,7 @@ export function detectInvite(url) {
   for (const r of INVITE_RULES) {
     if (r.hostRe && hostMatches(r.hostRe, host)) {
       if (r.pathRe && !r.pathRe.test(url.pathname)) continue;
+      if (r.paramEquals && url.searchParams.get(r.paramEquals[0]) !== r.paramEquals[1]) continue;
       return r.label;
     }
   }
@@ -108,7 +110,28 @@ export function detectInvite(url) {
 /** 短縮URL判定 */
 export function detectShortener(url) {
   const host = url.hostname.toLowerCase();
-  return SHORTENER_HOSTS.some(h => host === h || host.endsWith("." + h)) ? "短縮URL" : null;
+  return (isLinkMistyPage(url) || SHORTENER_HOSTS.some(h => host === h || host.endsWith("." + h)))
+    ? "短縮URL" : null;
+}
+
+/** LinkMisty のクリックで行き先へ転送するカードページ。 */
+export function isLinkMistyPage(raw) {
+  const url = typeof raw === "string" ? parseUrl(raw) : raw;
+  return !!url && /^(?:www\.)?linkmisty\.com$/i.test(url.hostname)
+    && /^\/c\/[a-z0-9_-]+\/?$/i.test(url.pathname);
+}
+
+/** 同一ページのクリック用転送先だけを採る。任意の外部リンクは追わない。 */
+export function extractLinkMistyClickTarget(html, pageUrl) {
+  const page = parseUrl(pageUrl);
+  if (!isLinkMistyPage(page) || !html) return null;
+  for (const m of html.matchAll(/location\.href\s*=\s*(['"])(.*?)\1/gi)) {
+    let target;
+    try { target = new URL(m[2], page); } catch { continue; }
+    if (target && target.origin === page.origin && target.pathname === page.pathname
+      && target.searchParams.get("lm_go") === "1") return target.href;
+  }
+  return null;
 }
 
 /** PR/広告記事・広告ネットワーク判定 */
@@ -244,6 +267,63 @@ export function extractRelayTarget(html) {
   // 4) 最初の絶対URL（自分自身のドメインは中継元なので除外できない点に注意）
   m = html.match(/https?:\/\/(?!t\.co\/)[^\s"'<>\\)]+/i);
   return m ? unescape(m[0]) : null;
+}
+
+/**
+ * link-in-bio（プロフィールリンク集約）サービスのURLか判定し、
+ * 遷移先一覧が入ったJSONのURLを返す。
+ *
+ * これらのページは本体HTMLがガワだけで、リンクはJSが後から描く。
+ * service worker ではJSを実行できないので、サービスが公開しているJSONを直接取りに行く。
+ *
+ * @returns {{id:string, jsonUrl:string, dropRe:RegExp|undefined}|null}
+ */
+export function matchBioLinkService(raw) {
+  const url = typeof raw === "string" ? parseUrl(raw) : raw;
+  if (!url) return null;
+  for (const svc of BIOLINK_SERVICES) {
+    if (!svc.hostRe.test(url.hostname)) continue;
+    // ページIDはパスの末尾セグメント。/en のような言語パスや空パスは対象外。
+    const id = (url.pathname || "").split("/").filter(Boolean).pop();
+    if (!id || !svc.idRe.test(id)) return null;
+    return { id: svc.id, jsonUrl: svc.jsonUrl(id), dropRe: svc.dropRe };
+  }
+  return null;
+}
+
+/**
+ * 解決JSONから遷移先URLの一覧を取り出す。
+ *
+ * Instabio系は cmpts が「JSON文字列の入れ子」になっている（{"cmpts":"[{...\"link\":\"...\"}]"}）。
+ * まず素直に二段パースし、形が変わっていたら生文字列からURLを拾う方に落とす。
+ * 形式変更で黙って0件になるより、雑でも拾えている方がよい。
+ *
+ * @returns {Array<{url:string,label:string}>}
+ */
+export function extractBioLinks(body, dropRe) {
+  if (!body || body.length > BIOLINK_MAX_BYTES) return [];
+  const out = [];
+  const push = (u, label) => {
+    if (typeof u !== "string") return;
+    const clean = u.replace(/\\\//g, "/").replace(/&amp;/g, "&");
+    if (!/^https?:\/\//i.test(clean)) return;
+    if (dropRe && dropRe.test(clean)) return;          // 自社CDNの画像等は遷移先ではない
+    if (out.some(o => o.url === clean)) return;
+    out.push({ url: clean, label: String(label || "").trim() });
+  };
+
+  try {
+    const j = JSON.parse(body);
+    const cmpts = typeof j.cmpts === "string" ? JSON.parse(j.cmpts) : j.cmpts;
+    for (const c of Array.isArray(cmpts) ? cmpts : []) {
+      push(c && c.link, c && (c.subtitle || c.title || c.text));
+    }
+  } catch { /* 形が変わった。下の総当たりに任せる */ }
+
+  if (!out.length) {
+    for (const m of String(body).matchAll(/https?:\\?\/\\?\/[^"'\\\s<>]+/g)) push(m[0], "");
+  }
+  return out.slice(0, BIOLINK_MAX_LINKS);
 }
 
 /** 後方互換のための別名（t.co専用だった頃のAPI） */

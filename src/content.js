@@ -7,6 +7,7 @@ const BADGE = {
   caution:   { emoji: "⚠️", text: "注意",   cover: true,  cls: "lr-caution",   tip: "自分で登録したドメイン" },
   adult:     { emoji: "🔞", text: "R18",    cover: true,  cls: "lr-adult",     tip: "アダルトサイトの可能性" },
   spam:      { emoji: "🚨", text: "連投",   cover: true,  cls: "lr-spam",      tip: "同じリンクが複数のポストに投稿されています" },
+  bait:      { emoji: "🎣", text: "誘導",   cover: true,  cls: "lr-bait",      tip: "中継カードの確認できた行き先" },
   paid:      { emoji: "🔒", text: "有料",   cover: true,  cls: "lr-paid",      tip: "有料記事の可能性" },
   download:  { emoji: "📦", text: "DL",     cover: true,  cls: "lr-download",  tip: "クリックでファイルが直接ダウンロードされます" },
   ads:       { emoji: "📊", text: "広告多", cover: false, cls: "lr-ads",       tip: "広告枠が多いページ" },
@@ -30,10 +31,15 @@ try {
   });
 } catch {}
 
-function hostFromText(t) {
-  if (!t) return null;
-  const m = t.replace(/\s+/g, "").match(/([a-z0-9-]+\.)+[a-z]{2,}(\.[a-z]{2,})?/i);
-  return m ? m[0].toLowerCase() : null;
+// カード内に追加した自分のバッジをリンクの表示テキストに混ぜない。
+function readLinkText(anchor) {
+  const walker = document.createTreeWalker(anchor, NodeFilter.SHOW_TEXT, {
+    acceptNode: n => n.parentElement?.closest(".lr-inline, .lr-overlay, .lr-cover")
+      ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
+  });
+  const parts = [];
+  while (walker.nextNode()) parts.push(walker.currentNode.textContent);
+  return parts.join(" ").trim();
 }
 
 /**
@@ -110,7 +116,7 @@ const BAIT_COVER_KINDS = new Set(["adult", "spam", "caution"]);
  * @returns {Element|null}
  */
 function findQuoteRoot(tweet) {
-  if (tweet.__lrQuote !== undefined) return tweet.__lrQuote;   // 1ポストにつき1回だけ計算
+  if (tweet.__lrQuote !== undefined) return tweet.__lrQuote;   // 今回の変更確認の中では一度だけ計算
 
   let found = null;
 
@@ -189,7 +195,7 @@ function makePill(bd, small) {
   const emo = document.createElement("span");
   emo.className = "lr-pill-emo";
   emo.textContent = b.emoji;
-  el.append(emo, b.text);
+  el.append(emo, bd.kind === "bait" && bd.label ? bd.label : b.text);
   el.title = bd.label ? `${b.tip}｜${bd.label}` : b.tip;
   return el;
 }
@@ -222,7 +228,7 @@ function renderOnCard(card, covers, pills, isQuote) {
     ico.textContent = b.emoji;
     const txt = document.createElement("span");
     txt.className = "lr-cover-txt";
-    txt.textContent = b.text;
+    txt.textContent = bd.kind === "bait" && bd.label ? bd.label : b.text;
     row.append(ico, txt);
     cover.appendChild(row);
   }
@@ -236,9 +242,7 @@ function renderOnCard(card, covers, pills, isQuote) {
 }
 
 function render(target, anchor, badges, tweet) {
-  if (!badges || !badges.length) return;
-
-  const shown = sortAndCap(badges);
+  const shown = sortAndCap(badges || []);
   const covers = shown.filter(b => BADGE[b.kind] && BADGE[b.kind].cover);
   const pills = shown.filter(b => !covers.includes(b));
 
@@ -258,6 +262,7 @@ function render(target, anchor, badges, tweet) {
     inlineHost.querySelectorAll(":scope > .lr-inline").forEach(n => n.remove());
   }
 
+  if (!shown.length) return;
   if (target) {
     renderOnCard(target, covers, pills, !!quoteRootOf(target, tweet));
   } else {
@@ -313,21 +318,41 @@ function trackForSpam(rec) {
   }
 }
 
-// SPAで会話ページを移動したらカウントをリセット
+// URL変更はDOM監視・判定・応答の各入口で確認する。1秒後の確認が新しい
+// ページの pending を消すと、先に届いた簡易判定のまま詳細判定が失われる。
 let lastPath = location.pathname;
-setInterval(() => {
-  if (location.pathname !== lastPath) {
-    lastPath = location.pathname;
-    domainRecords.clear();
-    pending.clear();   // 前のページのポストを覚えたままにしない
+let routeRevision = 0;
+function syncRoute() {
+  if (location.pathname === lastPath) return;
+  lastPath = location.pathname;
+  routeRevision++;
+  domainRecords.clear();
+  prunePending();
+  scan(document);
+}
+setInterval(syncRoute, 1000); // DOMが変わらない履歴操作の補助。判定開始は待たせない。
+addEventListener("popstate", syncRoute);
+
+const tweetStates = new WeakMap();
+function prunePending(tweet) {
+  for (const [key, slots] of pending) {
+    const alive = slots.filter(s => s.tweet.isConnected && s.tweet !== tweet);
+    if (alive.length) pending.set(key, alive); else pending.delete(key);
   }
-}, 1000);
+}
+function sameLink(a, b) {
+  return a.anchor === b.anchor && a.target === b.target && a.media === b.media &&
+    a.fromQuote === b.fromQuote && a.item.text === b.item.text;
+}
 
 // ------------------------------------------------------------------
 // ポスト処理
 // ------------------------------------------------------------------
 function processTweet(tweet) {
-  if (tweet.dataset.lrDone) return;
+  syncRoute();
+  if (!tweet.isConnected) return;
+  // 引用元も遅れて挿入・差し替えられるため、変更を確認するたびに取り直す。
+  delete tweet.__lrQuote;
   const anchors = [...tweet.querySelectorAll("a[href]")].filter(isExternalAnchor);
 
   // 同じリンクが「カードのアンカー」と「本文中のテキストアンカー」で二重に出ることがあるので、
@@ -335,10 +360,15 @@ function processTweet(tweet) {
   const byHref = new Map();
   for (const a of anchors) {
     const target = renderTargetFor(a, tweet);
+    const text = readLinkText(a);
+    // Xのカード見出しと「example.comから」は別々のアンカーになりうる。
+    // 描画先はカードを選びつつ、同じhrefの表示ドメインも簡易判定へ渡す。
+    const displayUrl = urlLikeToken(text.replace(/から$/, ""));
     const fromQuote = !!quoteRootOf(a, tweet);
     const prev = byHref.get(a.href);
-    if (!prev) { byHref.set(a.href, { anchor: a, target, fromQuote }); continue; }
+    if (!prev) { byHref.set(a.href, { anchor: a, target, fromQuote, text: displayUrl || text, displayUrl }); continue; }
     if (!prev.target && target) { prev.anchor = a; prev.target = target; }
+    if (!prev.displayUrl && displayUrl) { prev.text = displayUrl; prev.displayUrl = displayUrl; }
     // 本体にも同じリンクがあるなら、それは引用元由来ではない＝連投カウントの対象
     if (!fromQuote) prev.fromQuote = false;
   }
@@ -359,30 +389,70 @@ function processTweet(tweet) {
     }
   }
 
-  if (!byHref.size) return;
-  tweet.dataset.lrDone = "1";
-
-  const retry = () => {
-    tweet.dataset.lrDone = "";
-    setTimeout(() => { if (!tweet.dataset.lrDone) io.observe(tweet); }, 4000);
-  };
-
+  const next = new Map();
   for (const u of byHref.values()) {
     const item = u.textOnly
       ? { href: "", text: u.textOnly }
-      : { href: u.anchor.href, text: (u.anchor.innerText || u.anchor.textContent || "").trim() };
-    const key = item.href || item.text;
-    // 取得完了後に届く差分(classifyUpdate)で描き直せるよう、描画先を控えておく
-    addPending(key, { target: u.target, anchor: u.anchor, tweet, fromQuote: !!u.fromQuote });
-
-    try {
-      chrome.runtime.sendMessage({ type: "classify", item }, (resp) => {
-        if (chrome.runtime.lastError) { retry(); return; }
-        if (!resp) return;
-        applyResult(key, resp, retry);
-      });
-    } catch {}
+      : { href: u.anchor.href, text: u.text };
+    next.set(item.href || item.text, { ...u, item, tweet,
+      media: baitMediaFor(u.anchor, tweet), fromQuote: !!u.fromQuote });
   }
+  const identity = tweet.querySelector('time')?.closest('a')?.getAttribute('href') || "";
+  const prev = tweetStates.get(tweet);
+  if (prev && prev.route === routeRevision && prev.identity === identity &&
+      prev.links.size === next.size && [...next].every(([k, v]) =>
+        prev.links.has(k) && sameLink(prev.links.get(k), v))) return;
+
+  if (prev) {
+    prunePending(tweet);
+    tweet.querySelectorAll(".lr-cover, .lr-overlay, .lr-inline").forEach(n => n.remove());
+    for (const [domain, records] of domainRecords) {
+      const alive = records.filter(r => r.tweet !== tweet && r.tweet.isConnected);
+      if (alive.length) domainRecords.set(domain, alive); else domainRecords.delete(domain);
+    }
+  }
+  const state = { links: next, route: routeRevision, identity };
+  tweetStates.set(tweet, state);
+  tweet.dataset.lrDone = next.size ? "1" : ""; // 状態表示用。再処理を止めるゲートにはしない。
+
+  for (const [key, slot] of next) {
+    const old = prev?.links.get(key);
+    if (old && old.item.text === slot.item.text && !old.failed) {
+      slot.result = old.result;
+      if (old.inFlight) { slot.inFlight = true; addPending(key, slot); }
+      if (slot.result) displayResult(slot, slot.result);
+      continue;
+    }
+    requestClassification(key, slot);
+  }
+}
+
+function requestClassification(key, slot) {
+  slot.inFlight = true;
+  slot.failed = false;
+  addPending(key, slot);
+  try {
+    chrome.runtime.sendMessage({ type: "classify", item: slot.item }, resp => {
+      if (chrome.runtime.lastError || !resp) { retrySlot(key, slot); return; }
+      applyResult(key, resp);
+    });
+  } catch { retrySlot(key, slot); }
+}
+
+function retrySlot(key, slot) {
+  const current = tweetStates.get(slot.tweet)?.links.get(key);
+  if (!current || !current.tweet.isConnected) return;
+  current.inFlight = false;
+  current.failed = true;
+  // 一時的な通信失敗だけを再試行する。失敗中もURLから分かるバッジは残す。
+  if (current.retryTimer) return;
+  current.retries = (current.retries || 0) + 1;
+  if (current.retries > 2) return;
+  current.retryTimer = setTimeout(() => {
+    current.retryTimer = null;
+    if (tweetStates.get(current.tweet)?.links.get(key) === current && current.tweet.isConnected)
+      requestClassification(key, current);
+  }, 1000 * current.retries);
 }
 
 // ------------------------------------------------------------------
@@ -410,68 +480,112 @@ function addPending(key, slot) {
   if (i >= 0) list[i] = slot; else list.push(slot);
 }
 
-function applyResult(key, resp, onRetry) {
+function displayResult(slot, resp) {
+  // リンクの位置とカードは processTweet で取り直す。応答直前の差し替えにも対応する。
+  if (slot.anchor.tagName === "A") slot.target = renderTargetFor(slot.anchor, slot.tweet);
+  const badges = resp.badges ? [...resp.badges] : [];
+  render(slot.target, slot.anchor, badges, slot.tweet);
+  if (!resp.partial) trackForSpam({ ...slot, badges,
+    domain: resp.domain, safe: !!resp.safe });
+}
+
+function applyResult(key, resp) {
+  syncRoute();
   const list = pending.get(key);
-  if (!list || !list.length) return;
-
-  const r = resp.paywall && resp.paywall.reason;
-  if (r === "fetch-failed" || r === "resolve-miss") { if (onRetry) onRetry(); return; }
-
-  // DOMから消えたポスト（スクロールで破棄された等）は覚えておく意味がない
-  const alive = list.filter(s => s.tweet.isConnected);
-  if (alive.length !== list.length) pending.set(key, alive);
-
+  if (!list?.length) return;
+  const alive = list.filter(s => s.tweet.isConnected && s.anchor.isConnected &&
+    tweetStates.get(s.tweet)?.links.get(key) === s);
+  const reason = resp.paywall?.reason;
+  const failed = resp.retryable || reason === "fetch-failed" || reason === "resolve-miss" || !!resp.error;
   for (const slot of alive) {
-    // 描画先を取り直す。
-    // Xは画像/カードを本文より遅れて挿入することがあり、processTweetの時点では
-    // まだ無いことがある。そこで決めた target(null) をそのまま使い続けると、
-    // 画像が出てきても覆えずリンク脇の小バッジのままになる（実機で確認）。
-    // cover対象(🔞/🚨/🔒/📦)では「画像を覆う」という中心機能が黙って効かなくなる。
-    // ※ textOnly（引用元の素テキストURL）は anchor が <a> ではないので取り直さない。
-    if (!slot.target && slot.anchor && slot.anchor.tagName === "A") {
-      const retarget = renderTargetFor(slot.anchor, slot.tweet);
-      if (retarget) slot.target = retarget;
-    }
-
-    // badgesはポストごとに別配列にする（連投ラベルの追記が他のポストに混ざらないように）
-    const badges = resp.badges ? [...resp.badges] : [];
-    render(slot.target, slot.anchor, badges, slot.tweet);
-
-    // 連投カウントは行き先が確定してから（partialの時点ではまだ短縮URLのドメイン）
-    if (!resp.partial) {
-      trackForSpam({
-        target: slot.target, anchor: slot.anchor, badges, tweet: slot.tweet,
-        domain: resp.domain, safe: !!resp.safe, fromQuote: slot.fromQuote
-      });
-    }
+    // 最終結果の後に簡易結果が届く順序でも、表示を簡易判定に戻さない。
+    if (resp.partial && slot.result && !slot.result.partial) continue;
+    slot.result = resp;
+    slot.inFlight = !!resp.partial;
+    displayResult(slot, resp);
+    if (failed) retrySlot(key, slot);
   }
-  if (!resp.partial) pending.delete(key);
+  if (resp.partial && alive.length) pending.set(key, alive);
+  else pending.delete(key);
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "classifyUpdate" && msg.key) applyResult(msg.key, msg.result || {});
 });
 
-// 画面内に入ったポストだけ処理
-const io = new IntersectionObserver((entries) => {
+// 交差監視を継続して、見えているポストの内部変更はmicrotaskでまとめて処理する。
+// DOMの通常更新でgetBoundingClientRect等を繰り返す必要はない。
+const visibleTweets = new WeakSet();
+const observedTweets = new WeakSet();
+const queuedTweets = new Set();
+function queueTweet(tweet) {
+  if (!observedTweets.has(tweet)) {
+    observedTweets.add(tweet);
+    io.observe(tweet);
+  }
+  if (!visibleTweets.has(tweet) || queuedTweets.has(tweet)) return;
+  queuedTweets.add(tweet);
+  queueMicrotask(() => {
+    queuedTweets.delete(tweet);
+    processTweet(tweet);
+  });
+}
+const io = new IntersectionObserver(entries => {
+  syncRoute();
   for (const e of entries) {
-    if (e.isIntersecting) { processTweet(e.target); io.unobserve(e.target); }
+    if (e.isIntersecting) { visibleTweets.add(e.target); processTweet(e.target); }
+    else visibleTweets.delete(e.target);
   }
 }, { rootMargin: "150px" });
 
 const TWEET_SEL = 'article[data-testid="tweet"], article[role="article"]';
-
+const RADAR_UI_SEL = ".lr-inline, .lr-overlay, .lr-cover";
 function scan(root) {
   const base = root instanceof Element ? root : document;
-  // 追加されたノード自身がポストのこともある（querySelectorAllは自分自身を含まない）。
-  // Xは差し替え時にセル(div)ごと足すこともarticleだけ足すこともあり、
-  // 後者を取りこぼすと、そのポストは以後まったく判定されないままになる。
-  if (base instanceof Element && base.matches(TWEET_SEL) && !base.dataset.lrDone) io.observe(base);
-  base.querySelectorAll(TWEET_SEL).forEach(t => { if (!t.dataset.lrDone) io.observe(t); });
+  // 内部のリンク/カードだけが追加された場合も、所属するポストを拾う。
+  if (base instanceof Element) {
+    const tweet = base.closest(TWEET_SEL);
+    if (tweet) queueTweet(tweet);
+  }
+  base.querySelectorAll(TWEET_SEL).forEach(queueTweet);
+}
+function retire(root) {
+  if (!(root instanceof Element)) return;
+  const tweets = root.matches(TWEET_SEL) ? [root] : [...root.querySelectorAll(TWEET_SEL)];
+  for (const tweet of tweets) {
+    if (tweet.isConnected) continue;
+    io.unobserve(tweet);
+    observedTweets.delete(tweet);
+    visibleTweets.delete(tweet);
+    queuedTweets.delete(tweet);
+    prunePending(tweet);
+    // Xが同じarticleを再利用するとき、失ったpendingをinFlightのまま継承しない。
+    // 再挿入時は登録し直す。background側のキャッシュ/実行中リクエストは共有される。
+    tweetStates.delete(tweet);
+  }
 }
 
-scan(document);
-const mo = new MutationObserver((muts) => {
-  for (const m of muts) m.addedNodes.forEach(n => { if (n.nodeType === 1) scan(n); });
+const mo = new MutationObserver(muts => {
+  syncRoute();
+  const changed = new Set();
+  for (const m of muts) {
+    const target = m.target instanceof Element ? m.target : m.target.parentElement;
+    if (!target || target.closest(RADAR_UI_SEL)) continue;
+    if (m.type === "childList") {
+      const nodes = [...m.addedNodes, ...m.removedNodes];
+      // 自分が追加/削除したバッジだけの変更は再判定の原因にしない。
+      if (nodes.length && nodes.every(n => n instanceof Element && n.matches(RADAR_UI_SEL))) continue;
+      const tweet = target.closest(TWEET_SEL);
+      if (tweet) changed.add(tweet);
+      for (const n of m.addedNodes) if (n instanceof Element && !n.matches(RADAR_UI_SEL)) scan(n);
+      for (const n of m.removedNodes) retire(n);
+    } else if (m.type === "attributes" || target.closest('a, [data-testid="tweetText"], div[role="link"]')) {
+      const tweet = target.closest(TWEET_SEL);
+      if (tweet) changed.add(tweet);
+    }
+  }
+  changed.forEach(queueTweet);
 });
-mo.observe(document.body, { childList: true, subtree: true });
+mo.observe(document.body, { childList: true, subtree: true,
+  attributes: true, attributeFilter: ["href"], characterData: true });
+scan(document);

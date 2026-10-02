@@ -65,6 +65,12 @@ export const SHORTENER_HOSTS = [
   "s.id", "rb.gy", "shrtco.de", "urlz.fr", "v.gd", "t.ly", "1lnk.to", "shorturl.gg",
   "linktr.ee", "lit.link", "bit.do", "soo.gd", "clik.cc", "tiny.cc", "short.gy",
   "onelink.to", "ur0.cc", "ur0.link", "x.gd", "0mm.jp", "s.gd",
+  // プロフィールリンク集約(link-in-bio)。行き先が隠れているという意味では短縮URLと同じ。
+  // linktr.ee / lit.link は上に既出。ここは残りと、Instabio系の姉妹ドメイン全部。
+  // ※ Instabio系のホスト一覧は同社のJS(base1.js)内の正規表現から取った確定値。
+  "linkbio.co", "instabio.cc", "fans.link", "fanlnk.to", "shoplinks.to",
+  "instabio.to", "fotoee.com", "potofu.me", "bio.link", "beacons.ai",
+  "lnk.bio", "taplink.cc", "linkpop.com",
   // アプリの計測/ディープリンク基盤。招待キャンペーンのリンクはほぼこれ経由で、
   // 短縮URLと同じく「行き先(どのアプリ/どのストア)が隠れている」ので同じ扱いにする。
   "onelink.me", "app.link", "bnc.lt", "page.link", "adj.st", "go.link",
@@ -96,7 +102,11 @@ export const PR_RULES = [
 export const INVITE_RULES = [
   // TikTok Lite は招待コードがパスに埋まる（lite.tiktok.com/t/XXXX）ためホストで判定。
   // ※ 通常の tiktok.com/t/ は動画共有リンクでもあるので対象にしない。
-  { id: "tiktok-lite", label: "TikTok Lite 招待", hostRe: /(^|\.)lite\.tiktokv?\.com$/ }
+  { id: "tiktok-lite", label: "TikTok Lite 招待", hostRe: /(^|\.)lite\.tiktokv?\.com$/ },
+  // lite.tiktok.com の転送後に見える招待キャンペーンURL。通常の動画共有とは区別する。
+  { id: "tiktok-referral", label: "TikTok Lite 招待", hostRe: /^(?:www\.)?tiktok\.com$/,
+    pathRe: /^\/ug\/incentive\/share\/pro_scan_code\/?$/,
+    paramEquals: ["ug_launch_category", "referral"] }
 ];
 
 // 招待コードを表すクエリパラメータ（小文字化して完全一致で比較）。
@@ -111,6 +121,48 @@ export const INVITE_PARAMS = [
 // 招待用のパス。1セグメントまるごと一致のときだけ採る
 // （"/reference/" や "/2026/invitation-to-summit" を巻き込まないため）。
 export const INVITE_PATH_RE = /(^|\/)(invite|invites|invitation|invitations|referral|referrals|refer|invite-friend|invitefriends)(\/|$)/i;
+
+// ------------------------------------------------------------------
+// 3.6) link-in-bio（プロフィールリンク集約）サービスの遷移先解決
+//
+//    背景: 「ニュース見出し風のカード → 中継ページ → TikTok Lite等の招待リンク」という
+//    誘導がXで流行っている。中継に使われるのは linkbio.co のような正規のlink-in-bioサービスで、
+//    ページ本体はガワだけ(JSが後からリンクを描く)ため、HTMLを取っても行き先が見えなかった。
+//
+//    ここで扱うのは「サービスが公開しているリンク一覧を取得する口」。
+//    これは第三者のブロックリスト（5)で採用しなかったもの）とは性質が違う:
+//      - 対象は寿命数日の使い捨てドメインではなく、何年も続く正規サービスのホスト名
+//      - 判定内容は「このページの遷移先はこのURLだ」という、その場で確かめられる事実
+//    つまり評価ではなく観測なので、他のカテゴリと同じ土俵に乗る。
+//
+//    jsonUrl … ページIDから、遷移先一覧が入ったJSONのURLを組み立てる
+//    ※ Instabio系: https://bio.linkcdn.cc/upload/lnkcmpts/<ID>.json が認証なしで取れる。
+//      IDはURLのパス末尾そのまま（大文字小文字を保存する）。実測541バイト。
+// ------------------------------------------------------------------
+export const BIOLINK_SERVICES = [
+  {
+    id: "instabio",
+    hostRe: /^(?:www\.)?(?:linkbio\.co|instabio\.cc|fans\.link|fanlnk\.to|shoplinks\.to|instabio\.to|fotoee\.com)$/i,
+    idRe: /^[A-Za-z0-9_-]{6,32}$/,
+    jsonUrl: (id) => `https://bio.linkcdn.cc/upload/lnkcmpts/${id}.json`,
+    // 遷移先ではない自社CDN上の画像等を落とす
+    dropRe: /^https?:\/\/(?:bio\.linkcdn\.cc|(?:www\.)?(?:instabio\.cc|linkbio\.co))\//i
+  }
+];
+
+// 解決したJSONは小さい。これを超えるものは想定外なので捨てる（判定コストの暴発防止）
+export const BIOLINK_MAX_BYTES = 200_000;
+// 1ページから採用する遷移先の上限（普通のプロフィールでもこの程度）
+export const BIOLINK_MAX_LINKS = 20;
+
+// ------------------------------------------------------------------
+// 3.7) 中継カードの確認できた招待先を目立たせる
+//
+//    行き先が1件のlink-in-bio、またはLinkMistyカードで、転送先が招待リンクと
+//    確認できたときだけ強調する。短縮URLの存在だけで「偽装」とは判定しない。
+//    バッジには観測した招待先の種類を出し、見出しとの不一致は断定しない。
+// ------------------------------------------------------------------
+export const BAIT_MAX_LINKS = 1;
 
 // ------------------------------------------------------------------
 // 4) まとめ/転載サイト（既知ドメインの中立ラベル。リモート/ユーザーで拡充する前提）
@@ -411,6 +463,7 @@ export const CATEGORIES = [
   { kind: "paid",      label: "有料記事",       default: true,  needsFetch: true  },
   { kind: "affiliate", label: "アフィリンク",   default: true,  needsFetch: false },
   { kind: "invite",    label: "招待/紹介リンク", default: true,  needsFetch: false },
+  { kind: "bait",      label: "中継先が招待",     default: true,  needsFetch: true  },
   { kind: "shortener", label: "短縮URL",        default: true,  needsFetch: false },
   { kind: "pr",        label: "PR/広告リンク",  default: true,  needsFetch: false },
   { kind: "farm",      label: "まとめ/転載",    default: true,  needsFetch: false },

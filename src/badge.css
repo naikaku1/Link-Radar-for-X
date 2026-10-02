@@ -22,6 +22,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  max-width: calc(100% - 12px);
   pointer-events: auto;
   cursor: help;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
@@ -42,7 +43,7 @@
 }
 .lr-pill-emo { margin-right: 3px; }
 .lr-cover-ico { font-size: 24px; line-height: 1; }
-.lr-cover-txt { font-size: 16px; font-weight: 800; letter-spacing: 0.03em; }
+.lr-cover-txt { min-width: 0; font-size: 16px; font-weight: 800; letter-spacing: 0.03em; text-align: center; overflow-wrap: anywhere; }
 .lr-cover-sub {
   display: flex;
   flex-wrap: wrap;
@@ -54,6 +55,7 @@
 /* カテゴリごとの色。重要度が高いものほど彩度を上げる。 */
 .lr-cover.lr-adult    { background: rgba(157, 23, 77, 0.74); }   /* マゼンタ */
 .lr-cover.lr-spam     { background: rgba(159, 18, 57, 0.74); }   /* 深い赤 */
+.lr-cover.lr-bait     { background: rgba(124, 45, 18, 0.78); }   /* 焦茶 */
 .lr-cover.lr-caution  { background: rgba(154, 52, 18, 0.74); }   /* オレンジ */
 .lr-cover.lr-paid     { background: rgba(30, 58, 138, 0.74); }   /* 紺（危険ではなく「課金」の意味） */
 .lr-cover.lr-download { background: rgba(120, 53, 15, 0.74); }   /* 茶 */
@@ -112,6 +114,7 @@
 /* 覆う対象（画像/カード）が無いポストでは、cover対象もピルで出すのでその色 */
 .lr-pill.lr-adult     { background: rgba(190, 24, 93, 0.95); }
 .lr-pill.lr-spam      { background: rgba(190, 18, 60, 0.95); }
+.lr-pill.lr-bait      { background: rgba(154, 52, 18, 0.95); }
 .lr-pill.lr-caution   { background: rgba(194, 65, 12, 0.95); }
 .lr-pill.lr-paid      { background: rgba(30, 64, 175, 0.95); }
 .lr-pill.lr-download  { background: rgba(120, 53, 15, 0.95); }

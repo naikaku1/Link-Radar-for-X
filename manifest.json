@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Link Radar for X — リンクの正体判定",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "description": "そのリンク、開く前に正体がわかります。Xのタイムラインとリプ欄のリンクを判定し、アダルトや連投スパムは画像を覆って警告。有料記事やアフィリンクも見分けます。",
+  "minimum_chrome_version": "111",
   "permissions": ["storage"],
   "host_permissions": ["<all_urls>"],
   "background": {

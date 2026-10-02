@@ -26,6 +26,10 @@
 <body>
 <h1>content.js 表示テスト（Xの構造を再現したダミー）</h1>
 
+<p class="caption">SPA遷移・遅延追加（実物のIntersectionObserverで確認）</p>
+<button id="navigate-replies" type="button">リプ欄へ移動して判定を確認</button>
+<div id="navigation-stage"></div>
+
 <!-- ① 通常ポスト + カード（アダルト） -->
 <p class="caption">① 通常ポスト＋カード → 画像を赤で覆う</p>
 <article data-testid="tweet" role="article">
@@ -35,6 +39,19 @@
     <a href="https://t.co/AAAA">
       <div class="thumb">サムネイル画像</div>
       <div class="cardtxt"><div class="host">missav.com</div><div>無料動画まとめ</div></div>
+    </a>
+  </div>
+</article>
+
+<!-- 中継カードの招待先を確認できた場合は正体をカード上に表示 -->
+<p class="caption">中継カード → 実際の行き先「TikTok Lite 招待」を表示</p>
+<article data-testid="tweet" role="article">
+  <div data-testid="User-Name"><span class="name">リンク投稿 <span class="handle">@test</span></span></div>
+  <div class="txt">こちらへ</div>
+  <div data-testid="card.wrapper">
+    <a href="https://t.co/BAIT">
+      <div class="thumb">カード画像</div>
+      <div class="cardtxt"><div class="host">linkmisty.com</div><div>詳細を見る</div></div>
     </a>
   </div>
 </article>
@@ -137,6 +154,7 @@
 const RESULTS = {
   "text:bit.ly/xyz123": { badges: [{ kind: "adult", label: "アダルトサイト" }, { kind: "shortener", label: "短縮URL" }], domain: "missav.com", safe: false },
   "https://t.co/AAAA": { badges: [{ kind: "adult", label: "アダルトサイト" }], domain: "missav.com", safe: false },
+  "https://t.co/BAIT": { badges: [{ kind: "shortener", label: "短縮URL" }, { kind: "invite", label: "TikTok Lite 招待" }, { kind: "bait", label: "TikTok Lite 招待" }], domain: "tiktok.com", safe: true },
   "https://t.co/BBBB": { badges: [{ kind: "adult", label: "アダルトサイト" }], domain: "pornhub.com", safe: false },
   "https://t.co/CCCC": { badges: [], domain: "gigazine.net", safe: false },
   "https://t.co/DDDD": { badges: [{ kind: "affiliate", label: "Amazon短縮" }], domain: "amzn.to", safe: false },
@@ -146,18 +164,40 @@ const RESULTS = {
   "https://t.co/GGGG": { badges: [{ kind: "shortener", label: "短縮URL" }, { kind: "affiliate", label: "Amazon短縮" }], domain: "amzn.to", safe: false },
   "https://t.co/HHHH": { badges: [{ kind: "adult", label: "アダルトサイト" }], domain: "missav.com", safe: false }
 };
+const updateListeners = [];
 window.chrome = {
   runtime: {
     lastError: null,
-    onMessage: { addListener() {} },   // content.js が差分更新用に登録する
+    onMessage: { addListener(fn) { updateListeners.push(fn); } },
     sendMessage(msg, cb) {
       // href が空＝素のテキストから拾ったケース。background は text で判定する。
       const key = msg.item.href || ("text:" + msg.item.text);
-      setTimeout(() => cb(RESULTS[key] || { badges: [] }), 0);
+      if (key === "https://t.co/BAIT_NAV") {
+        setTimeout(() => cb({badges:[{kind:"shortener",label:"短縮URL"}],partial:true}), 0);
+        setTimeout(() => updateListeners.forEach(fn => fn({type:"classifyUpdate",key,result:RESULTS["https://t.co/BAIT"]})), 1200);
+      } else setTimeout(() => cb(RESULTS[key] || { badges: [] }), 0);
     }
   },
   storage: { sync: { get(defaults, cb) { cb(defaults); } } }
 };
+document.querySelector("#navigate-replies").addEventListener("click", () => {
+  history.pushState({}, "", "/fixture/status/" + Date.now());
+  const stage = document.querySelector("#navigation-stage");
+  stage.innerHTML = '<article data-testid="tweet" role="article"><div data-testid="User-Name">遅れて読み込まれるリプ</div><div class="txt">カードとリンクを読み込み中…</div></article>';
+  const tweet = stage.querySelector("article");
+  setTimeout(() => {
+    const a = document.createElement("a");
+    a.href = "https://t.co/BAIT_NAV";
+    a.textContent = "linkmisty.com";
+    tweet.querySelector(".txt").replaceChildren(a);
+  }, 200);
+  setTimeout(() => {
+    const card = document.createElement("div");
+    card.dataset.testid = "card.wrapper";
+    card.innerHTML = '<div class="thumb">後から追加されたカード</div><div class="cardtxt">中継リンクのサムネイル</div>';
+    tweet.append(card);
+  }, 500);
+});
 </script>
 <script src="../src/content.js"></script>
 </body>
